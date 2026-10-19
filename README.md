@@ -1,9 +1,13 @@
+<img src="https://raw.githubusercontent.com/felixblang/ha-cisco-meraki/main/custom_components/cisco_meraki/brand/logo.png" alt="Cisco Meraki" height="64">
+
 # Cisco Meraki for Home Assistant
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories)
 
-A Home Assistant custom integration that monitors the devices of a
-[Cisco Meraki](https://meraki.cisco.com/) organization through the Meraki Dashboard API.
+A Home Assistant custom integration for [Cisco Meraki](https://meraki.cisco.com/)
+organizations: device status and clients, switch ports you can turn on and off with
+their PoE power and energy, and MT sensors whose readings are recorded at the time
+they were measured, from the Meraki Dashboard API or locally over MQTT.
 
 > [!NOTE]
 > This is unrelated to the built-in [Meraki](https://www.home-assistant.io/integrations/meraki/)
@@ -107,6 +111,12 @@ readings again from the last complete hour, up to 24 hours back.
 > statistics are written through the recorder's internal import, which a future Home
 > Assistant release may change; the integration then falls back to hourly statistics
 > and logs a warning.
+
+## Trademarks
+
+This is an independent project and is not affiliated with or endorsed by Cisco. Cisco
+Meraki and the Cisco Meraki logo are trademarks of Cisco Systems, Inc.; the logo is
+the one Home Assistant uses for its built-in Meraki integration.
 
 ## Installation
 
