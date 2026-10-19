@@ -1,46 +1,71 @@
-# Notice
+# Meraki Dashboard for Home Assistant
 
-The component and platforms in this repository are not meant to be used by a
-user, but as a "blueprint" that custom component developers can build
-upon, to make more awesome stuff.
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories)
 
-HAVE FUN! 😎
+A Home Assistant custom integration that monitors the devices of a
+[Cisco Meraki](https://meraki.cisco.com/) organization through the Meraki Dashboard API.
 
-## Why?
+> [!NOTE]
+> This is unrelated to the built-in [Meraki](https://www.home-assistant.io/integrations/meraki/)
+> integration, which receives client locations through the Meraki CMX API.
 
-This is simple, by having custom_components look (README + structure) the same
-it is easier for developers to help each other and for users to start using them.
+## Features
 
-If you are a developer and you want to add things to this "blueprint" that you think more
-developers will have use for, please open a PR to add it :)
+Every device in the organization (or in the networks you select) shows up as a
+Home Assistant device with:
 
-## What?
+| Entity | Description |
+| -- | -- |
+| **Status** | `online`, `offline`, `alerting` or `dormant`, as reported by the Dashboard. |
+| **Clients** | Number of clients currently online on the device. Access points, switches and security appliances only. |
 
-This repository contains multiple files, here is a overview:
+New devices are picked up on the next poll. Data refreshes every 5 minutes.
 
-File | Purpose | Documentation
--- | -- | --
-`.devcontainer.json` | Used for development/testing with Visual Studio Code. | [Documentation](https://code.visualstudio.com/docs/remote/containers)
-`.github/ISSUE_TEMPLATE/*.yml` | Templates for the issue tracker | [Documentation](https://help.github.com/en/github/building-a-strong-community/configuring-issue-templates-for-your-repository)
-`custom_components/integration_blueprint/*` | Integration files, this is where everything happens. | [Documentation](https://developers.home-assistant.io/docs/creating_component_index)
-`CONTRIBUTING.md` | Guidelines on how to contribute. | [Documentation](https://help.github.com/en/github/building-a-strong-community/setting-guidelines-for-repository-contributors)
-`LICENSE` | The license file for the project. | [Documentation](https://help.github.com/en/github/creating-cloning-and-archiving-repositories/licensing-a-repository)
-`README.md` | The file you are reading now, should contain info about the integration, installation and configuration instructions. | [Documentation](https://help.github.com/en/github/writing-on-github/basic-writing-and-formatting-syntax)
-`requirements.txt` | Python packages used for development/lint/testing this integration. | [Documentation](https://pip.pypa.io/en/stable/user_guide/#requirements-files)
+## Installation
 
-## How?
+### HACS (custom repository)
 
-1. Create a new repository in GitHub, using this repository as a template by clicking the "Use this template" button in the GitHub UI.
-1. Open your new repository in Visual Studio Code devcontainer (Preferably with the "`Dev Containers: Clone Repository in Named Container Volume...`" option).
-1. Rename all instances of the `integration_blueprint` to `custom_components/<your_integration_domain>` (e.g. `custom_components/awesome_integration`).
-1. Rename all instances of the `Integration Blueprint` to `<Your Integration Name>` (e.g. `Awesome Integration`).
-1. Run the `scripts/develop` to start HA and test out your new integration.
+1. In HACS, open the menu in the top right and choose **Custom repositories**.
+2. Add `https://github.com/felixblang/hass_meraki_intergration` with the type **Integration**.
+3. Install **Meraki Dashboard** and restart Home Assistant.
 
-## Next steps
+### Manual
 
-These are some next steps you may want to look into:
-- Add tests to your integration, [`pytest-homeassistant-custom-component`](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component) can help you get started.
-- Add brand images (logo/icon) to https://github.com/home-assistant/brands.
-- Create your first release.
-- Share your integration on the [Home Assistant Forum](https://community.home-assistant.io/).
-- Submit your integration to [HACS](https://hacs.xyz/docs/publish/start).
+Copy `custom_components/hass_meraki` into the `custom_components` folder of your
+Home Assistant configuration and restart Home Assistant.
+
+## Configuration
+
+1. In the Meraki Dashboard, enable API access and create an API key under
+   **Organization > API & Webhooks**. A key for a read-only administrator is enough.
+2. In Home Assistant, go to **Settings > Devices & services > Add integration** and
+   search for **Meraki Dashboard**.
+3. Enter the API key. If it has access to several organizations, pick one. Repeat the
+   setup to add more organizations.
+
+To limit the integration to some networks, open the integration's **Configure** dialog
+and select them. Leave the selection empty to include every network.
+
+If the API key is revoked, Home Assistant asks you to reauthenticate with a new one.
+
+## API usage
+
+Each poll makes two organization-wide requests plus one client request per network
+that has an access point, switch or appliance. The Meraki API allows 10 requests per
+second per organization; the integration retries automatically when it is rate limited.
+
+## Development
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements_test.txt
+.venv/bin/pytest
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
+```
+
+`scripts/develop` starts a local Home Assistant instance with the integration loaded,
+using the `config` directory. A VS Code dev container is included.
+
+## License
+
+[MIT](LICENSE)

@@ -1,150 +1,218 @@
-import logging
-from homeassistant import config_entries
+"""Config flow for the Meraki Dashboard integration."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
 import voluptuous as vol
+from homeassistant.config_entries import (
+    ConfigEntryState,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_API_KEY
-import homeassistant.helpers.config_validation as cv
-from . import DOMAIN
-import meraki
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
+from meraki import APIError
 
-_LOGGER = logging.getLogger(__name__)
+from .api import async_close_client, async_create_client, is_auth_error
+from .const import CONF_NETWORKS, CONF_ORGANIZATION_ID, DOMAIN, LOGGER
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from .coordinator import MerakiConfigEntry
+
+API_KEY_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_API_KEY): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+        )
+    }
+)
 
 
-class MerakiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Meraki Network."""
+class MerakiConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Meraki Dashboard."""
 
     VERSION = 1
 
-    async def async_step_user(self, user_input=None):
-        """Handle the initial user input (API Key, optional Org ID, optional Network ID)."""
-        errors = {}
+    def __init__(self) -> None:
+        """Initialize the flow."""
+        self._api_key: str = ""
+        self._organizations: dict[str, str] = {}
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask for the API key and look up the organizations it can access."""
+        errors: dict[str, str] = {}
 
         if user_input is not None:
-            api_key = user_input["api_key"]
-            org_id = user_input.get("org_id")
-            network_id = user_input.get("network_id")
-
-            try:
-                dashboard = meraki.DashboardAPI(api_key=api_key, suppress_logging=True)
-
-                if network_id:
-                    await self.hass.async_add_executor_job(
-                        dashboard.networks.getNetwork, network_id
-                    )
-                elif org_id:
-                    await self.hass.async_add_executor_job(
-                        dashboard.organizations.getOrganization, org_id
-                    )
-                else:
-                    orgs = await self.hass.async_add_executor_job(
-                        dashboard.organizations.getOrganizations
-                    )
-                    if not orgs:
-                        errors["base"] = "no_organizations"
-
-            except meraki.APIError as e:
-                _LOGGER.error(f"Meraki API Error: {e}")
-                errors["base"] = "invalid_api_key"
-
-            if not errors:
-                return self.async_create_entry(title="Meraki Network", data=user_input)
+            self._api_key = user_input[CONF_API_KEY]
+            organizations, error = await self._async_fetch_organizations(self._api_key)
+            if error:
+                errors["base"] = error
+            elif not organizations:
+                errors["base"] = "no_organizations"
+            else:
+                self._organizations = organizations
+                if len(organizations) == 1:
+                    return await self._async_create_org_entry(next(iter(organizations)))
+                return await self.async_step_organization()
 
         return self.async_show_form(
-            step_id="user", data_schema=self._get_schema(), errors=errors
+            step_id="user", data_schema=API_KEY_SCHEMA, errors=errors
         )
 
-    def _get_schema(self, default_data=None):
-        """Return the schema for the setup form."""
-        default_data = default_data or {}
-        return vol.Schema(
-            {
-                vol.Required(
-                    "api_key", default=default_data.get("api_key", "")
-                ): cv.string,
-                vol.Optional(
-                    "org_id", default=default_data.get("org_id", "")
-                ): cv.string,
-                vol.Optional(
-                    "network_id", default=default_data.get("network_id", "")
-                ): cv.string,
-            }
+    async def async_step_organization(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Let the user pick one of the accessible organizations."""
+        if user_input is not None:
+            return await self._async_create_org_entry(user_input[CONF_ORGANIZATION_ID])
+
+        options = [
+            SelectOptionDict(value=org_id, label=name)
+            for org_id, name in sorted(
+                self._organizations.items(), key=lambda item: item[1].lower()
+            )
+        ]
+        return self.async_show_form(
+            step_id="organization",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_ORGANIZATION_ID): SelectSelector(
+                        SelectSelectorConfig(
+                            options=options, mode=SelectSelectorMode.DROPDOWN
+                        )
+                    )
+                }
+            ),
         )
 
-    @staticmethod
-    def async_get_options_flow(config_entry):
-        """Return the options flow handler."""
-        return MerakiOptionsFlowHandler(config_entry)
+    async def async_step_reauth(
+        self,
+        entry_data: Mapping[str, Any],  # noqa: ARG002
+    ) -> ConfigFlowResult:
+        """Start reauthentication after the API key stopped working."""
+        return await self.async_step_reauth_confirm()
 
-
-class MerakiOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle options flow for Meraki integration."""
-
-    def __init__(self, config_entry):
-        """Initialize options flow."""
-
-    async def async_step_init(self, user_input=None):
-        """Manage the options."""
-        errors = {}
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask for a new API key."""
+        errors: dict[str, str] = {}
+        entry = self._get_reauth_entry()
 
         if user_input is not None:
-            api_key = (
-                user_input["api_key"]
-                if user_input["api_key"]
-                else self.config_entry.options.get("api_key")
+            organizations, error = await self._async_fetch_organizations(
+                user_input[CONF_API_KEY]
             )
-            org_id = user_input.get("org_id")
-            network_id = user_input.get("network_id")
-
-            try:
-                dashboard = meraki.DashboardAPI(api_key=api_key, suppress_logging=True)
-
-                if network_id:
-                    await self.hass.async_add_executor_job(
-                        dashboard.networks.getNetwork, network_id
-                    )
-                elif org_id:
-                    await self.hass.async_add_executor_job(
-                        dashboard.organizations.getOrganization, org_id
-                    )
-                else:
-                    orgs = await self.hass.async_add_executor_job(
-                        dashboard.organizations.getOrganizations
-                    )
-                    if not orgs:
-                        errors["base"] = "no_organizations"
-
-            except meraki.APIError as e:
-                _LOGGER.error(f"Meraki API Error: {e}")
-                errors["base"] = "invalid_api_key"
-
-            if not errors:
-                return self.async_create_entry(
-                    title="",
-                    data={
-                        "api_key": api_key,  # Behalte alten API Key, falls leer
-                        "org_id": org_id,
-                        "network_id": network_id,
-                    },
+            if error:
+                errors["base"] = error
+            elif entry.unique_id not in organizations:
+                errors["base"] = "organization_not_accessible"
+            else:
+                return self.async_update_reload_and_abort(
+                    entry, data_updates={CONF_API_KEY: user_input[CONF_API_KEY]}
                 )
 
         return self.async_show_form(
-            step_id="init",
-            data_schema=self._get_schema(self.config_entry.options),
+            step_id="reauth_confirm",
+            data_schema=API_KEY_SCHEMA,
+            description_placeholders={"organization": entry.title},
             errors=errors,
         )
 
-    def _get_schema(self, default_data=None):
-        """Return the schema for the options form."""
-        default_data = default_data or {}
-        return vol.Schema(
-            {
-                vol.Required(
-                    "api_key"
-                ): cv.string,  # Passwort-Feld, nicht vorausgefüllt
-                vol.Optional(
-                    "org_id", default=default_data.get("org_id", "")
-                ): cv.string,
-                vol.Optional(
-                    "network_id", default=default_data.get("network_id", "")
-                ): cv.string,
-            }
+    async def _async_create_org_entry(self, organization_id: str) -> ConfigFlowResult:
+        await self.async_set_unique_id(organization_id)
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(
+            title=self._organizations[organization_id],
+            data={CONF_API_KEY: self._api_key, CONF_ORGANIZATION_ID: organization_id},
+        )
+
+    async def _async_fetch_organizations(
+        self, api_key: str
+    ) -> tuple[dict[str, str], str | None]:
+        """Return ({org_id: name}, error_key) for the given API key."""
+        client = await async_create_client(self.hass, api_key)
+        try:
+            organizations = await client.organizations.getOrganizations(
+                total_pages="all"
+            )
+        except APIError as err:
+            if is_auth_error(err):
+                return {}, "invalid_auth"
+            LOGGER.debug("Could not connect to the Meraki Dashboard API: %s", err)
+            return {}, "cannot_connect"
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Unexpected error while validating the API key")
+            return {}, "unknown"
+        finally:
+            await async_close_client(client)
+        return {org["id"]: org.get("name") or org["id"] for org in organizations}, None
+
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: MerakiConfigEntry,  # noqa: ARG004
+    ) -> MerakiOptionsFlow:
+        """Return the options flow handler."""
+        return MerakiOptionsFlow()
+
+
+class MerakiOptionsFlow(OptionsFlow):
+    """Let the user restrict the integration to a subset of networks."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose which networks to include."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+
+        entry: MerakiConfigEntry = self.config_entry
+        if entry.state is not ConfigEntryState.LOADED:
+            return self.async_abort(reason="not_loaded")
+        try:
+            networks = (
+                await entry.runtime_data.client.organizations.getOrganizationNetworks(
+                    entry.data[CONF_ORGANIZATION_ID], total_pages="all"
+                )
+            )
+        except APIError as err:
+            LOGGER.debug("Could not list networks: %s", err)
+            return self.async_abort(reason="cannot_connect")
+
+        options = [
+            SelectOptionDict(
+                value=network["id"], label=network.get("name") or network["id"]
+            )
+            for network in sorted(networks, key=lambda n: (n.get("name") or "").lower())
+        ]
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(
+                    {
+                        vol.Optional(CONF_NETWORKS): SelectSelector(
+                            SelectSelectorConfig(
+                                options=options,
+                                multiple=True,
+                                mode=SelectSelectorMode.DROPDOWN,
+                            )
+                        )
+                    }
+                ),
+                entry.options,
+            ),
         )

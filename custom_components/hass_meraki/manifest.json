@@ -1,12 +1,13 @@
 {
   "domain": "hass_meraki",
-  "name": "Meraki Network",
+  "name": "Meraki Dashboard",
   "codeowners": ["@felixblang"],
   "config_flow": true,
-  "dependencies": [],
-  "documentation": "https://www.home-assistant.io/integrations/hass_meraki",
+  "documentation": "https://github.com/felixblang/hass_meraki_intergration",
+  "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "quality_scale": "bronze",
-  "requirements": ["meraki==1.54.0"],
-  "version": "0.1.0"
+  "issue_tracker": "https://github.com/felixblang/hass_meraki_intergration/issues",
+  "loggers": ["meraki"],
+  "requirements": ["meraki==4.7.0"],
+  "version": "0.2.0"
 }

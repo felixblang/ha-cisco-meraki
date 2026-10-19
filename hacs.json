@@ -1,7 +1,5 @@
 {
-  "name": "Meraki",
-    "homeassistant": "2025.2.0",
-    "render_readme": true,
-    "zip_release": true,
-    "filename": "meraki.zip"
+  "name": "Meraki Dashboard",
+  "homeassistant": "2025.1.0",
+  "render_readme": true
 }
