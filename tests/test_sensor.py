@@ -1,4 +1,4 @@
-"""Tests for the Meraki Dashboard setup and sensors."""
+"""Tests for the Cisco Meraki setup and sensors."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
 )
 
-from custom_components.hass_meraki.const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from custom_components.cisco_meraki.const import DEFAULT_SCAN_INTERVAL, DOMAIN
 
 from .conftest import DEVICES, make_api_error
 

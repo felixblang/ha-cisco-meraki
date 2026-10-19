@@ -1,0 +1,161 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to the Meraki Dashboard",
+        "description": "Create an API key in the Meraki Dashboard under **Organization > API & Webhooks**. A read-only key is enough for monitoring; turning switch ports on and off needs a key with full access.",
+        "data": {
+          "api_key": "API key"
+        },
+        "data_description": {
+          "api_key": "Meraki Dashboard API key."
+        }
+      },
+      "organization": {
+        "title": "Select organization",
+        "description": "The API key has access to several organizations. Choose the one to add; you can add the others later.",
+        "data": {
+          "organization_id": "Organization"
+        }
+      },
+      "networks": {
+        "title": "Select networks",
+        "description": "Choose which networks of {organization} to include. Leave the selection empty to include all networks, including ones added later.",
+        "data": {
+          "networks": "Networks"
+        },
+        "data_description": {
+          "networks": "Only devices in these networks are added to Home Assistant."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Cisco Meraki",
+        "description": "The API key for {organization} is no longer valid. Enter a new API key.",
+        "data": {
+          "api_key": "API key"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the Meraki Dashboard API.",
+      "invalid_auth": "The API key is invalid.",
+      "no_organizations": "The API key does not have access to any organization.",
+      "organization_not_accessible": "This API key does not have access to the configured organization.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This organization is already configured.",
+      "reauth_successful": "Reauthentication was successful.",
+      "cannot_connect": "Failed to connect to the Meraki Dashboard API."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Cisco Meraki options",
+        "data": {
+          "networks": "Networks"
+        },
+        "data_description": {
+          "networks": "Only include devices from these networks. Leave empty to include all networks."
+        }
+      }
+    },
+    "abort": {
+      "cannot_connect": "Failed to connect to the Meraki Dashboard API.",
+      "not_loaded": "The integration must be loaded to change its options."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "port_link": {
+        "name": "Port {port} link"
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "online": "Online",
+          "offline": "Offline",
+          "alerting": "Alerting",
+          "dormant": "Dormant"
+        }
+      },
+      "clients": {
+        "name": "Clients",
+        "unit_of_measurement": "clients"
+      },
+      "temperature": {
+        "name": "Temperature"
+      },
+      "humidity": {
+        "name": "Humidity"
+      },
+      "co2": {
+        "name": "CO2"
+      },
+      "pm25": {
+        "name": "PM2.5"
+      },
+      "tvoc": {
+        "name": "TVOC"
+      },
+      "noise": {
+        "name": "Noise"
+      },
+      "indoor_air_quality": {
+        "name": "Indoor air quality"
+      },
+      "battery": {
+        "name": "Battery"
+      },
+      "real_power": {
+        "name": "Power"
+      },
+      "apparent_power": {
+        "name": "Apparent power"
+      },
+      "voltage": {
+        "name": "Voltage"
+      },
+      "current": {
+        "name": "Current"
+      },
+      "frequency": {
+        "name": "Frequency"
+      },
+      "power_factor": {
+        "name": "Power factor"
+      },
+      "energy": {
+        "name": "Energy"
+      },
+      "port_poe_power": {
+        "name": "Port {port} PoE power"
+      },
+      "port_poe_energy": {
+        "name": "Port {port} PoE energy"
+      }
+    },
+    "switch": {
+      "port": {
+        "name": "Port {port}"
+      }
+    }
+  },
+  "exceptions": {
+    "invalid_auth": {
+      "message": "The Meraki API key is invalid or no longer has access to the organization."
+    },
+    "update_failed": {
+      "message": "Error communicating with the Meraki Dashboard API: {error}"
+    },
+    "write_not_permitted": {
+      "message": "The Meraki API key is read-only. Use a key with full access to change switch ports."
+    },
+    "port_update_failed": {
+      "message": "Could not change port {port}: {error}"
+    }
+  }
+}

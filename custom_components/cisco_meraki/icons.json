@@ -1,0 +1,40 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "port_link": {
+        "default": "mdi:ethernet-cable",
+        "state": {
+          "off": "mdi:ethernet-cable-off"
+        }
+      }
+    },
+    "sensor": {
+      "status": {
+        "default": "mdi:help-network",
+        "state": {
+          "online": "mdi:lan-connect",
+          "offline": "mdi:lan-disconnect",
+          "alerting": "mdi:alert-circle",
+          "dormant": "mdi:sleep"
+        }
+      },
+      "clients": {
+        "default": "mdi:devices"
+      },
+      "port_poe_power": {
+        "default": "mdi:flash"
+      },
+      "port_poe_energy": {
+        "default": "mdi:lightning-bolt"
+      }
+    },
+    "switch": {
+      "port": {
+        "default": "mdi:ethernet",
+        "state": {
+          "off": "mdi:ethernet-off"
+        }
+      }
+    }
+  }
+}

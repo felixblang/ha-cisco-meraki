@@ -9,4 +9,4 @@ homeassistant:
 logger:
   default: info
   logs:
-    custom_components.hass_meraki: debug
+    custom_components.cisco_meraki: debug

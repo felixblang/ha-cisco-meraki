@@ -1,4 +1,4 @@
-"""Config flow for the Meraki Dashboard integration."""
+"""Config flow for the Cisco Meraki integration."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.const import CONF_API_KEY
+from homeassistant.core import callback
 from homeassistant.helpers.selector import (
     SelectOptionDict,
     SelectSelector,
@@ -40,8 +41,27 @@ API_KEY_SCHEMA = vol.Schema(
 )
 
 
+def networks_schema(networks: list[dict[str, Any]]) -> vol.Schema:
+    """Return a schema to pick networks; an empty selection means all of them."""
+    options = [
+        SelectOptionDict(
+            value=network["id"], label=network.get("name") or network["id"]
+        )
+        for network in sorted(networks, key=lambda n: (n.get("name") or "").lower())
+    ]
+    return vol.Schema(
+        {
+            vol.Optional(CONF_NETWORKS): SelectSelector(
+                SelectSelectorConfig(
+                    options=options, multiple=True, mode=SelectSelectorMode.DROPDOWN
+                )
+            )
+        }
+    )
+
+
 class MerakiConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Meraki Dashboard."""
+    """Handle a config flow for Cisco Meraki."""
 
     VERSION = 1
 
@@ -49,6 +69,8 @@ class MerakiConfigFlow(ConfigFlow, domain=DOMAIN):
         """Initialize the flow."""
         self._api_key: str = ""
         self._organizations: dict[str, str] = {}
+        self._organization_id: str = ""
+        self._networks: list[dict[str, Any]] = []
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -66,7 +88,9 @@ class MerakiConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 self._organizations = organizations
                 if len(organizations) == 1:
-                    return await self._async_create_org_entry(next(iter(organizations)))
+                    return await self._async_select_organization(
+                        next(iter(organizations))
+                    )
                 return await self.async_step_organization()
 
         return self.async_show_form(
@@ -78,7 +102,9 @@ class MerakiConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Let the user pick one of the accessible organizations."""
         if user_input is not None:
-            return await self._async_create_org_entry(user_input[CONF_ORGANIZATION_ID])
+            return await self._async_select_organization(
+                user_input[CONF_ORGANIZATION_ID]
+            )
 
         options = [
             SelectOptionDict(value=org_id, label=name)
@@ -97,6 +123,21 @@ class MerakiConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
                 }
             ),
+        )
+
+    async def async_step_networks(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Let the user pick which networks of the organization to include."""
+        if user_input is not None:
+            return self._async_create_org_entry(user_input.get(CONF_NETWORKS, []))
+
+        return self.async_show_form(
+            step_id="networks",
+            data_schema=networks_schema(self._networks),
+            description_placeholders={
+                "organization": self._organizations[self._organization_id]
+            },
         )
 
     async def async_step_reauth(
@@ -133,12 +174,37 @@ class MerakiConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def _async_create_org_entry(self, organization_id: str) -> ConfigFlowResult:
+    async def _async_select_organization(
+        self, organization_id: str
+    ) -> ConfigFlowResult:
         await self.async_set_unique_id(organization_id)
         self._abort_if_unique_id_configured()
+        self._organization_id = organization_id
+
+        client = await async_create_client(self.hass, self._api_key)
+        try:
+            self._networks = await client.organizations.getOrganizationNetworks(
+                organization_id, total_pages="all"
+            )
+        except APIError as err:
+            LOGGER.debug("Could not list networks: %s", err)
+            return self.async_abort(reason="cannot_connect")
+        finally:
+            await async_close_client(client)
+
+        if len(self._networks) <= 1:
+            return self._async_create_org_entry([])
+        return await self.async_step_networks()
+
+    @callback
+    def _async_create_org_entry(self, networks: list[str]) -> ConfigFlowResult:
         return self.async_create_entry(
-            title=self._organizations[organization_id],
-            data={CONF_API_KEY: self._api_key, CONF_ORGANIZATION_ID: organization_id},
+            title=self._organizations[self._organization_id],
+            data={
+                CONF_API_KEY: self._api_key,
+                CONF_ORGANIZATION_ID: self._organization_id,
+            },
+            options={CONF_NETWORKS: networks},
         )
 
     async def _async_fetch_organizations(
@@ -193,26 +259,10 @@ class MerakiOptionsFlow(OptionsFlow):
             LOGGER.debug("Could not list networks: %s", err)
             return self.async_abort(reason="cannot_connect")
 
-        options = [
-            SelectOptionDict(
-                value=network["id"], label=network.get("name") or network["id"]
-            )
-            for network in sorted(networks, key=lambda n: (n.get("name") or "").lower())
-        ]
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                vol.Schema(
-                    {
-                        vol.Optional(CONF_NETWORKS): SelectSelector(
-                            SelectSelectorConfig(
-                                options=options,
-                                multiple=True,
-                                mode=SelectSelectorMode.DROPDOWN,
-                            )
-                        )
-                    }
-                ),
+                networks_schema(networks),
                 entry.options,
             ),
         )

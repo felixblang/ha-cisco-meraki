@@ -1,0 +1,25 @@
+{
+  "domain": "cisco_meraki",
+  "name": "Cisco Meraki",
+  "after_dependencies": [
+    "mqtt"
+  ],
+  "codeowners": [
+    "@felixblang"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "recorder"
+  ],
+  "documentation": "https://github.com/felixblang/ha-cisco-meraki",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/felixblang/ha-cisco-meraki/issues",
+  "loggers": [
+    "meraki"
+  ],
+  "requirements": [
+    "meraki==4.7.0"
+  ],
+  "version": "0.2.0"
+}

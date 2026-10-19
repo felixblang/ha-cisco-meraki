@@ -1,8 +1,10 @@
-"""Fixtures for the Meraki Dashboard tests."""
+"""Fixtures for the Cisco Meraki tests."""
 
 from __future__ import annotations
 
 from collections.abc import Generator
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,7 +13,7 @@ from homeassistant.const import CONF_API_KEY
 from meraki import APIError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hass_meraki.const import CONF_ORGANIZATION_ID, DOMAIN
+from custom_components.cisco_meraki.const import CONF_ORGANIZATION_ID, DOMAIN
 
 API_KEY = "0123456789abcdef"
 ORG_ID = "123456"
@@ -38,18 +40,178 @@ DEVICES = [
         "productType": "camera",
         "networkId": NETWORK_ID,
     },
+    {
+        "serial": "Q2SW-SSSS-SSSS",
+        "name": "Core Switch",
+        "model": "MS120-8",
+        "mac": "aa:bb:cc:00:00:03",
+        "productType": "switch",
+        "networkId": NETWORK_ID,
+    },
 ]
+
+SWITCH_PORTS = [
+    {
+        "serial": "Q2SW-SSSS-SSSS",
+        "ports": [
+            {
+                "portId": "1",
+                "name": "Desk",
+                "enabled": True,
+                "type": "access",
+                "vlan": 1,
+                "poeEnabled": True,
+            },
+            {
+                "portId": "2",
+                "name": "",
+                "enabled": False,
+                "type": "access",
+                "vlan": 1,
+                "poeEnabled": True,
+            },
+            {
+                "portId": "8",
+                "name": "Uplink",
+                "enabled": True,
+                "type": "trunk",
+                "vlan": 1,
+            },
+        ],
+    },
+    # A switch outside the configured networks must be ignored.
+    {"serial": "Q2XX-XXXX-XXXX", "ports": [{"portId": "1", "enabled": True}]},
+]
+
+COPPER_CAPABILITIES = [
+    "Auto negotiate",
+    "1 Gigabit full duplex (auto)",
+    "100 Megabit (auto)",
+]
+SFP_CAPABILITIES = ["Auto negotiate", "1 Gigabit full duplex (forced)"]
+
+# Per-switch port details; only used to tell RJ45 from SFP ports.
+DEVICE_SWITCH_PORTS = [
+    {"portId": "1", "linkNegotiationCapabilities": COPPER_CAPABILITIES},
+    {"portId": "2", "linkNegotiationCapabilities": COPPER_CAPABILITIES},
+    {"portId": "8", "linkNegotiationCapabilities": SFP_CAPABILITIES},
+]
+
+SWITCH_PORT_STATUSES = {
+    "items": [
+        {
+            "serial": "Q2SW-SSSS-SSSS",
+            "ports": [
+                {
+                    "portId": "1",
+                    "status": "Connected",
+                    "isUplink": False,
+                    "speed": "1 Gbps",
+                    "duplex": "full",
+                },
+                {
+                    "portId": "2",
+                    "status": "Disconnected",
+                    "isUplink": False,
+                    "speed": "",
+                    "duplex": "",
+                    "poe": {"isAllocated": True},
+                },
+                {
+                    "portId": "8",
+                    "status": "Connected",
+                    "isUplink": True,
+                    "speed": "1 Gbps",
+                    "duplex": "full",
+                },
+            ],
+        }
+    ],
+    "meta": {"counts": {"items": {"total": 1, "remaining": 0}}},
+}
 
 AVAILABILITIES = [
     {"serial": "Q2AA-AAAA-AAAA", "status": "online"},
     {"serial": "Q2BB-BBBB-BBBB", "status": "offline"},
+    {"serial": "Q2SW-SSSS-SSSS", "status": "online"},
 ]
 
 CLIENTS = [
     {"status": "Online", "recentDeviceSerial": "Q2AA-AAAA-AAAA"},
     {"status": "Online", "recentDeviceSerial": "Q2AA-AAAA-AAAA"},
     {"status": "Offline", "recentDeviceSerial": "Q2AA-AAAA-AAAA"},
+    {
+        "status": "Online",
+        "recentDeviceSerial": "Q2SW-SSSS-SSSS",
+        "switchport": "1",
+        "description": "office-pc",
+    },
+    {
+        "status": "Offline",
+        "recentDeviceSerial": "Q2SW-SSSS-SSSS",
+        "switchport": "1",
+        "description": None,
+        "mac": "aa:bb:cc:dd:ee:ff",
+    },
 ]
+
+
+def _usage(start: datetime, wh: float | None) -> dict[str, Any]:
+    end = start + timedelta(minutes=5)
+    return {
+        "startTs": start.isoformat().replace("+00:00", "Z"),
+        "endTs": end.isoformat().replace("+00:00", "Z"),
+        "energy": {"usage": None if wh is None else {"total": wh}},
+    }
+
+
+USAGE_START = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
+
+# Port 2 powers a PoE device that has no network link. Port 1 has PoE enabled but
+# nothing draws power from it, and port 8 has no PoE at all.
+SWITCH_PORT_USAGE = {
+    "items": [
+        {
+            "serial": "Q2SW-SSSS-SSSS",
+            "ports": [
+                {"portId": "1", "intervals": [_usage(USAGE_START, 0.0)]},
+                {
+                    "portId": "2",
+                    "intervals": [
+                        _usage(USAGE_START + timedelta(minutes=5 * i), 0.1)
+                        for i in range(14)
+                    ],
+                },
+                {"portId": "8", "intervals": [_usage(USAGE_START, None)]},
+            ],
+        }
+    ],
+    "meta": {"counts": {"items": {"total": 1, "remaining": 0}}},
+}
+
+SWITCH_PORT_TOPOLOGY = {
+    "items": [
+        {
+            "serial": "Q2SW-SSSS-SSSS",
+            "ports": [
+                {
+                    "portId": "8",
+                    "lldp": [
+                        {"name": "System name", "value": "Router"},
+                        {"name": "Chassis ID", "value": "aa:aa:aa:aa:aa:aa"},
+                    ],
+                    "cdp": [],
+                },
+                {
+                    "portId": "2",
+                    "lldp": [{"name": "Chassis ID", "value": "bb:bb:bb:bb:bb:bb"}],
+                    "cdp": [],
+                },
+            ],
+        }
+    ],
+    "meta": {"counts": {"items": {"total": 1, "remaining": 0}}},
+}
 
 
 def make_api_error(status: int) -> APIError:
@@ -60,8 +222,10 @@ def make_api_error(status: int) -> APIError:
 
 
 @pytest.fixture(autouse=True)
-def auto_enable_custom_integrations(enable_custom_integrations: Any) -> None:
-    """Enable loading the custom integration in every test."""
+def auto_enable_custom_integrations(
+    recorder_mock: Any, enable_custom_integrations: Any
+) -> None:
+    """Load the custom integration, and the recorder it depends on, in every test."""
 
 
 @pytest.fixture
@@ -82,8 +246,24 @@ def mock_client() -> Generator[MagicMock]:
         return_value=list(AVAILABILITIES)
     )
     client.networks.getNetworkClients = AsyncMock(return_value=list(CLIENTS))
+    client.switch.getOrganizationSwitchPortsBySwitch = AsyncMock(
+        return_value=deepcopy(SWITCH_PORTS)
+    )
+    client.switch.getOrganizationSwitchPortsStatusesBySwitch = AsyncMock(
+        return_value=deepcopy(SWITCH_PORT_STATUSES)
+    )
+    client.switch.getOrganizationSwitchPortsTopologyDiscoveryByDevice = AsyncMock(
+        return_value=deepcopy(SWITCH_PORT_TOPOLOGY)
+    )
+    client.switch.getDeviceSwitchPorts = AsyncMock(
+        return_value=deepcopy(DEVICE_SWITCH_PORTS)
+    )
+    client.switch.getOrganizationSwitchPortsUsageHistoryByDeviceByInterval = AsyncMock(
+        return_value=deepcopy(SWITCH_PORT_USAGE)
+    )
+    client.switch.updateDeviceSwitchPort = AsyncMock(return_value={})
     with patch(
-        "custom_components.hass_meraki.api.AsyncDashboardAPI", return_value=client
+        "custom_components.cisco_meraki.api.AsyncDashboardAPI", return_value=client
     ):
         yield client
 

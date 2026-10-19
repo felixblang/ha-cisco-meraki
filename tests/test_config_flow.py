@@ -1,4 +1,4 @@
-"""Tests for the Meraki Dashboard config flow."""
+"""Tests for the Cisco Meraki config flow."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hass_meraki.const import (
+from custom_components.cisco_meraki.const import (
     CONF_NETWORKS,
     CONF_ORGANIZATION_ID,
     DOMAIN,
@@ -21,7 +21,7 @@ from .conftest import API_KEY, NETWORK_ID, ORG_ID, ORG_NAME, make_api_error
 
 
 async def test_single_organization(hass: HomeAssistant, mock_client: MagicMock) -> None:
-    """An API key with one organization creates the entry right away."""
+    """With one organization the flow goes straight to picking networks."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
     )
@@ -31,9 +31,16 @@ async def test_single_organization(hass: HomeAssistant, mock_client: MagicMock) 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_API_KEY: API_KEY}
     )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "networks"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_NETWORKS: [NETWORK_ID]}
+    )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == ORG_NAME
     assert result["data"] == {CONF_API_KEY: API_KEY, CONF_ORGANIZATION_ID: ORG_ID}
+    assert result["options"] == {CONF_NETWORKS: [NETWORK_ID]}
     assert result["result"].unique_id == ORG_ID
     mock_client.__aexit__.assert_awaited()
 
@@ -58,7 +65,12 @@ async def test_multiple_organizations(
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_ORGANIZATION_ID: "999"}
     )
+    assert result["step_id"] == "networks"
+
+    # An empty selection means all networks.
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"] == {CONF_NETWORKS: []}
     assert result["title"] == "Other"
     assert result["data"][CONF_ORGANIZATION_ID] == "999"
 
@@ -92,7 +104,7 @@ async def test_user_errors(
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_API_KEY: API_KEY}
     )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["step_id"] == "networks"
 
 
 async def test_no_organizations(hass: HomeAssistant, mock_client: MagicMock) -> None:
@@ -105,6 +117,23 @@ async def test_no_organizations(hass: HomeAssistant, mock_client: MagicMock) -> 
         result["flow_id"], {CONF_API_KEY: API_KEY}
     )
     assert result["errors"] == {"base": "no_organizations"}
+
+
+async def test_single_network_skips_selection(
+    hass: HomeAssistant, mock_client: MagicMock
+) -> None:
+    """With only one network there is nothing to choose."""
+    mock_client.organizations.getOrganizationNetworks.return_value = [
+        {"id": NETWORK_ID, "name": "Home"}
+    ]
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_API_KEY: API_KEY}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"] == {CONF_NETWORKS: []}
 
 
 async def test_already_configured(
@@ -147,6 +176,8 @@ async def test_reauth(
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reauth_successful"
     assert mock_config_entry.data[CONF_API_KEY] == "new-key"
+    # Reauth reloads the entry; let that finish before the test ends.
+    await hass.async_block_till_done(wait_background_tasks=True)
 
 
 async def test_options_flow(
