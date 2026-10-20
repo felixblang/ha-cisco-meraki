@@ -12,11 +12,18 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower, UnitOfTime
+from homeassistant.const import (
+    LIGHT_LUX,
+    PERCENTAGE,
+    UnitOfEnergy,
+    UnitOfPower,
+    UnitOfTime,
+)
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .camera_sense import LIGHT, MerakiCameraSense, SenseValue
 from .const import CLIENT_PRODUCT_TYPES, DEVICE_STATUSES, DOMAIN, UPLINK_STATUSES
 from .entity import MerakiEntity, MerakiPortEntity, async_setup_port_entities
 from .readings import ENERGY_SOURCE_METRIC, METRICS
@@ -114,6 +121,17 @@ async def async_setup_entry(
 
     for factory in (MerakiPortPoePowerSensor, MerakiPortPoeEnergySensor):
         async_setup_port_entities(entry, async_add_entities, factory, _has_poe)
+
+    if sense := coordinator.camera_sense:
+
+        @callback
+        def _async_add_sense_sensor(value: SenseValue) -> None:
+            if value.serial in coordinator.data.devices:
+                async_add_entities([MerakiCameraSenseSensor(coordinator, sense, value)])
+
+        entry.async_on_unload(
+            sense.async_add_new_value_listener(_async_add_sense_sensor)
+        )
 
     known_poe_switches: set[str] = set()
 
@@ -529,3 +547,49 @@ class MerakiSwitchPoePowerSensor(MerakiEntity, SensorEntity):
     def native_value(self) -> float | None:
         """Return the sum of the PoE power of all ports."""
         return self.coordinator.data.switch_poe_power.get(self._serial)
+
+
+class MerakiCameraSenseSensor(MerakiEntity, SensorEntity):
+    """An MV Sense value of a camera: a zone's object count, light or audio level."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: MerakiDataUpdateCoordinator,
+        sense: MerakiCameraSense,
+        value: SenseValue,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, value.serial, f"sense_{value.key}")
+        self._sense = sense
+        self._key = value.key
+        if value.zone_id is not None:
+            self._attr_translation_key = f"zone_{value.object_type}"
+            self._attr_translation_placeholders = {
+                "zone": sense.zone_name(value.serial, value.zone_id)
+            }
+        elif value.key == LIGHT:
+            self._attr_translation_key = "illuminance"
+            self._attr_device_class = SensorDeviceClass.ILLUMINANCE
+            self._attr_native_unit_of_measurement = LIGHT_LUX
+        else:
+            # Relative to the microphone's full scale, not a sound pressure.
+            self._attr_translation_key = "audio_level"
+            self._attr_native_unit_of_measurement = "dBFS"
+            self._attr_entity_registry_enabled_default = False
+
+    async def async_added_to_hass(self) -> None:
+        """Follow the camera's updates."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._sense.async_add_update_listener(
+                self._serial, self._key, self.async_write_ha_state
+            )
+        )
+
+    @property
+    def native_value(self) -> int | float | None:
+        """Return the latest value."""
+        value = self._sense.values.get((self._serial, self._key))
+        return value.value if value else None

@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from meraki.aio import AsyncDashboardAPI
 
+    from .camera_sense import MerakiCameraSense
     from .sensor_coordinator import MerakiSensorCoordinator
 
 type MerakiConfigEntry = ConfigEntry[MerakiDataUpdateCoordinator]
@@ -184,6 +185,8 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
         self._uplink_quality: dict[tuple[str, str], MerakiUplinkQuality] = {}
         # Polls MT sensor readings, if the organization has sensors.
         self.sensors: MerakiSensorCoordinator | None = None
+        # MV Sense data of the organization's cameras, received over MQTT.
+        self.camera_sense: MerakiCameraSense | None = None
 
     @property
     def sensors_present(self) -> bool:

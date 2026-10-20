@@ -77,6 +77,15 @@
       },
       "poe_power": {
         "default": "mdi:flash"
+      },
+      "zone_person": {
+        "default": "mdi:account-multiple"
+      },
+      "zone_vehicle": {
+        "default": "mdi:car-multiple"
+      },
+      "audio_level": {
+        "default": "mdi:microphone"
       }
     },
     "switch": {

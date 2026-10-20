@@ -303,6 +303,13 @@ SWITCH_PORT_TOPOLOGY = {
 }
 
 
+# The MV12's analytics zones: the full frame and a drawn zone.
+CAMERA_ZONES = [
+    {"zoneId": "0", "type": "occupancy", "label": "Full Frame"},
+    {"id": "619244948763443982", "type": "area", "name": "Entrance"},
+]
+
+
 def make_api_error(status: int) -> APIError:
     """Build an APIError like the SDK raises it."""
     response = MagicMock(status_code=status, reason_phrase="error")
@@ -357,6 +364,9 @@ def mock_client() -> Generator[MagicMock]:
         return_value=deepcopy(SWITCH_PORT_USAGE)
     )
     client.switch.updateDeviceSwitchPort = AsyncMock(return_value={})
+    client.camera.getDeviceCameraAnalyticsZones = AsyncMock(
+        return_value=deepcopy(CAMERA_ZONES)
+    )
     with patch(
         "custom_components.cisco_meraki.api.AsyncDashboardAPI", return_value=client
     ):

@@ -187,6 +187,18 @@
       },
       "poe_power": {
         "name": "PoE power"
+      },
+      "zone_person": {
+        "name": "{zone} people"
+      },
+      "zone_vehicle": {
+        "name": "{zone} vehicles"
+      },
+      "illuminance": {
+        "name": "Illuminance"
+      },
+      "audio_level": {
+        "name": "Audio level"
       }
     },
     "switch": {

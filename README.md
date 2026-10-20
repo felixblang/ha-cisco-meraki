@@ -157,6 +157,24 @@ complete hour, up to 24 hours back.
 > Assistant release may change; the integration then falls back to hourly statistics
 > and logs a warning.
 
+### MV cameras (MV Sense)
+
+If your MV cameras publish MV Sense data to an MQTT broker (set up in the camera's
+Sense settings in the Dashboard) and Home Assistant's MQTT integration is connected to
+the same broker, each camera gets:
+
+- **_Zone_ people** for each of its analytics zones (the full frame and every zone you
+  drew in the Dashboard, by their Dashboard names), and **_Zone_ vehicles** on cameras
+  that count vehicles.
+- **Illuminance** (lx), on cameras with a light sensor.
+- **Audio level** (dBFS), on cameras with a microphone. It is relative to the
+  microphone's full scale, not a sound pressure, so it starts disabled.
+
+The sensors appear as soon as a camera publishes the value. Cameras publish within a
+few seconds and repeat their counts several times a second; only changes are written,
+and Home Assistant compiles the statistics as for any other sensor. There is no
+fallback through the Dashboard API: without MQTT, cameras have no MV Sense sensors.
+
 ## Trademarks
 
 This is an independent project and is not affiliated with or endorsed by Cisco. Cisco

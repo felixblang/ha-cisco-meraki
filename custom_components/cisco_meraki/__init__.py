@@ -6,13 +6,14 @@ from typing import TYPE_CHECKING
 
 from homeassistant.const import CONF_API_KEY, Platform
 
-from . import mqtt_source
+from . import camera_sense, mqtt_source
 from .api import async_close_client, async_create_client
 from .coordinator import MerakiConfigEntry, MerakiDataUpdateCoordinator
 from .sensor_coordinator import MerakiSensorCoordinator
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
+    from meraki.aio import AsyncDashboardAPI
 
 PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR, Platform.SWITCH]
 
@@ -27,6 +28,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: MerakiConfigEntry) -> bo
     entry.runtime_data = coordinator
     if coordinator.sensors_present:
         coordinator.sensors = MerakiSensorCoordinator(hass, entry, client, coordinator)
+    if cameras := [
+        serial
+        for serial, device in coordinator.data.devices.items()
+        if device.product_type == "camera"
+    ]:
+        coordinator.camera_sense = camera_sense.MerakiCameraSense(cameras)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -39,7 +46,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: MerakiConfigEntry) -> bo
             _async_start_sensors(hass, entry, coordinator.sensors),
             f"{entry.entry_id} sensors",
         )
+    if coordinator.camera_sense:
+        entry.async_create_background_task(
+            hass,
+            _async_start_camera_sense(hass, entry, client, coordinator.camera_sense),
+            f"{entry.entry_id} camera sense",
+        )
     return True
+
+
+async def _async_start_camera_sense(
+    hass: HomeAssistant,
+    entry: MerakiConfigEntry,
+    client: AsyncDashboardAPI,
+    sense: camera_sense.MerakiCameraSense,
+) -> None:
+    """Name the cameras' zones, then take their MV Sense data from MQTT."""
+    await sense.async_load_zone_names(client)
+    if unsubscribe := await camera_sense.async_subscribe(hass, sense):
+        entry.async_on_unload(unsubscribe)
 
 
 async def _async_start_sensors(
