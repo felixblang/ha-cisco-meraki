@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.const import PERCENTAGE, UnitOfTime
 from homeassistant.core import CALLBACK_TYPE, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.event import async_call_later
@@ -26,6 +27,11 @@ from .const import (
     PORT_CHANGE_REFRESH_DELAYS,
     PORT_USAGE_MAX_BACKFILL,
     PORT_USAGE_MIN_SPAN,
+    UPLINK_PRODUCT_TYPES,
+    UPLINK_QUALITY_DELAY,
+    UPLINK_QUALITY_MAX_BACKFILL,
+    UPLINK_QUALITY_WINDOW,
+    UPLINK_STATUSES,
 )
 from .stats import (
     HOUR,
@@ -92,16 +98,46 @@ class MerakiSwitchPort:
 
 
 @dataclass(slots=True)
+class MerakiUplink:
+    """A WAN uplink of an appliance or gateway."""
+
+    interface: str
+    status: str | None
+    ip: str | None = None
+    gateway: str | None = None
+    public_ip: str | None = None
+    primary_dns: str | None = None
+    secondary_dns: str | None = None
+    ip_assigned_by: str | None = None
+
+
+@dataclass(slots=True)
+class MerakiUplinkQuality:
+    """The newest loss and latency measurement of an uplink."""
+
+    ts: datetime
+    destination: str
+    latency: float | None
+    loss: float | None
+
+
+@dataclass(slots=True)
 class MerakiData:
     """Everything fetched for one organization in a single update."""
 
     devices: dict[str, MerakiDevice] = field(default_factory=dict)
     # Switch serial -> port ID -> port.
     ports: dict[str, dict[str, MerakiSwitchPort]] = field(default_factory=dict)
+    # Appliance serial -> interface (e.g. "wan1") -> uplink.
+    uplinks: dict[str, dict[str, MerakiUplink]] = field(default_factory=dict)
+    # (Appliance serial, interface) -> newest loss and latency measurement.
+    uplink_quality: dict[tuple[str, str], MerakiUplinkQuality] = field(
+        default_factory=dict
+    )
 
 
 class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
-    """Poll a Meraki organization for devices, client counts and switch ports."""
+    """Poll a Meraki organization for devices, switch ports and uplinks."""
 
     config_entry: MerakiConfigEntry
 
@@ -127,6 +163,9 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
         self._port_connectors: dict[str, dict[str, str | None]] = {}
         # PoE energy statistics per switch port.
         self.port_energy = StatisticsWriter(hass)
+        # Uplink loss and latency, measured every minute, at their own timestamps.
+        self.uplink_stats = StatisticsWriter(hass)
+        self._uplink_quality: dict[tuple[str, str], MerakiUplinkQuality] = {}
         config_entry.async_on_unload(self._async_cancel_port_refreshes)
         # Polls MT sensor readings, if the organization has sensors.
         self.sensors: MerakiSensorCoordinator | None = None
@@ -209,7 +248,146 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
             await self._async_fetch_switch_ports(data)
             _add_port_clients(data, client_lists)
 
+        if any(d.product_type in UPLINK_PRODUCT_TYPES for d in data.devices.values()):
+            await self._async_fetch_uplinks(data)
+            await self._async_fetch_uplink_quality(data)
+
         return data
+
+    async def _async_fetch_uplink_quality(self, data: MerakiData) -> None:
+        """Add uplink loss and latency, and write their statistics."""
+        now = dt_util.utcnow()
+        end = (now - UPLINK_QUALITY_DELAY).replace(microsecond=0)
+        start = await self._async_uplink_quality_since(data, end)
+        get_quality = (
+            self.client.organizations.getOrganizationDevicesUplinksLossAndLatency
+        )
+        try:
+            while start < end:
+                window_end = min(start + UPLINK_QUALITY_WINDOW, end)
+                series = await get_quality(
+                    self.organization_id,
+                    t0=start.isoformat(),
+                    t1=window_end.isoformat(),
+                )
+                await self._async_add_uplink_quality(data, series)
+                start = window_end
+        except APIError as err:
+            if is_auth_error(err):
+                raise
+            # Loss and latency are a nice-to-have; keep the uplink status.
+            LOGGER.debug("Could not fetch uplink loss and latency: %s", err)
+        finally:
+            data.uplink_quality = dict(self._uplink_quality)
+            self.uplink_stats.async_write(now)
+
+    async def _async_uplink_quality_since(
+        self, data: MerakiData, end: datetime
+    ) -> datetime:
+        """Return the time from which uplink loss and latency have to be fetched."""
+        earliest = end - UPLINK_QUALITY_MAX_BACKFILL
+        if not self.uplink_stats.statistics:
+            # First run: continue where the uplinks' statistics left off.
+            for serial, uplinks in data.uplinks.items():
+                for interface in uplinks:
+                    await self._async_uplink_quality_statistics(data, serial, interface)
+            resume = [
+                stat.hour_done
+                for stat in self.uplink_stats.statistics.values()
+                if stat.hour_done is not None
+            ]
+            return max(min(resume, default=end - UPLINK_QUALITY_WINDOW), earliest)
+        watermarks = [
+            stat.watermark
+            for stat in self.uplink_stats.statistics.values()
+            if stat.watermark is not None
+        ]
+        return max(min(watermarks, default=end - UPLINK_QUALITY_WINDOW), earliest)
+
+    async def _async_add_uplink_quality(
+        self, data: MerakiData, series: list[dict[str, Any]]
+    ) -> None:
+        # Meraki probes several destinations per uplink; use one, preferring IPv4.
+        chosen: dict[tuple[str, str], dict[str, Any]] = {}
+        for item in sorted(
+            series, key=lambda i: (":" in (i.get("ip") or ""), i.get("ip") or "")
+        ):
+            key = (item.get("serial", ""), item.get("uplink", ""))
+            if key[0] in data.devices and key[1]:
+                chosen.setdefault(key, item)
+
+        for (serial, interface), item in chosen.items():
+            latency_stat, loss_stat = await self._async_uplink_quality_statistics(
+                data, serial, interface
+            )
+            points = sorted(
+                (
+                    (dt_util.as_utc(ts), point)
+                    for point in item.get("timeSeries", [])
+                    if (ts := dt_util.parse_datetime(point.get("ts") or ""))
+                ),
+                key=lambda pair: pair[0],
+            )
+            for ts, point in points:
+                latency, loss = point.get("latencyMs"), point.get("lossPercent")
+                if latency is not None:
+                    latency_stat.add(ts, float(latency))
+                if loss is not None:
+                    loss_stat.add(ts, float(loss))
+            if points:
+                ts, point = points[-1]
+                self._uplink_quality[(serial, interface)] = MerakiUplinkQuality(
+                    ts=ts,
+                    destination=item.get("ip") or "",
+                    latency=point.get("latencyMs"),
+                    loss=point.get("lossPercent"),
+                )
+
+    async def _async_uplink_quality_statistics(
+        self, data: MerakiData, serial: str, interface: str
+    ) -> tuple[MerakiStatistic, MerakiStatistic]:
+        """Return the latency and loss statistics of an uplink."""
+        device = data.devices[serial]
+        return (
+            await self.uplink_stats.async_ensure(
+                statistic_id(serial, f"uplink_{interface}_latency"),
+                f"{device.name} {interface} latency",
+                UnitOfTime.MILLISECONDS,
+                StatisticKind.MEAN,
+                entity_unique_id=f"{serial}_uplink_{interface}_latency",
+            ),
+            await self.uplink_stats.async_ensure(
+                statistic_id(serial, f"uplink_{interface}_loss"),
+                f"{device.name} {interface} packet loss",
+                PERCENTAGE,
+                StatisticKind.MEAN,
+                entity_unique_id=f"{serial}_uplink_{interface}_loss",
+            ),
+        )
+
+    async def _async_fetch_uplinks(self, data: MerakiData) -> None:
+        """Add the WAN uplinks of appliances and gateways."""
+        statuses = await self.client.organizations.getOrganizationUplinksStatuses(
+            self.organization_id, total_pages="all"
+        )
+        for device in statuses:
+            serial = device.get("serial")
+            if serial not in data.devices:
+                continue
+            data.uplinks[serial] = {
+                uplink["interface"]: MerakiUplink(
+                    interface=uplink["interface"],
+                    status=_uplink_status(uplink.get("status")),
+                    ip=uplink.get("ip"),
+                    gateway=uplink.get("gateway"),
+                    public_ip=uplink.get("publicIp"),
+                    primary_dns=uplink.get("primaryDns"),
+                    secondary_dns=uplink.get("secondaryDns"),
+                    ip_assigned_by=uplink.get("ipAssignedBy"),
+                )
+                for uplink in device.get("uplinks", [])
+                if uplink.get("interface")
+            }
 
     async def _async_fetch_switch_ports(self, data: MerakiData) -> None:
         """Add port configuration, link status and neighbors for every switch."""
@@ -525,3 +703,15 @@ def _interval_energy(interval: dict[str, Any]) -> float | None:
     usage = (interval.get("energy") or {}).get("usage") or {}
     total = usage.get("total")
     return float(total) if isinstance(total, int | float) else None
+
+
+def _uplink_status(status: str | None) -> str | None:
+    """Return an uplink status as one of UPLINK_STATUSES, or None if unknown."""
+    if status is None:
+        return None
+    # The API reports "not connected" with a space.
+    normalized = status.lower().replace(" ", "_")
+    if normalized not in UPLINK_STATUSES:
+        LOGGER.debug("Unknown uplink status %s", status)
+        return None
+    return normalized

@@ -136,6 +136,54 @@
       },
       "port_poe_energy": {
         "name": "Port {port} PoE energy"
+      },
+      "uplink_wan": {
+        "name": "WAN {number}",
+        "state": {
+          "active": "Active",
+          "ready": "Ready",
+          "connecting": "Connecting",
+          "not_connected": "Not connected",
+          "failed": "Failed"
+        }
+      },
+      "uplink_cellular": {
+        "name": "Cellular",
+        "state": {
+          "active": "Active",
+          "ready": "Ready",
+          "connecting": "Connecting",
+          "not_connected": "Not connected",
+          "failed": "Failed"
+        }
+      },
+      "uplink": {
+        "name": "Uplink {interface}",
+        "state": {
+          "active": "Active",
+          "ready": "Ready",
+          "connecting": "Connecting",
+          "not_connected": "Not connected",
+          "failed": "Failed"
+        }
+      },
+      "uplink_wan_latency": {
+        "name": "WAN {number} latency"
+      },
+      "uplink_wan_loss": {
+        "name": "WAN {number} packet loss"
+      },
+      "uplink_cellular_latency": {
+        "name": "Cellular latency"
+      },
+      "uplink_cellular_loss": {
+        "name": "Cellular packet loss"
+      },
+      "uplink_latency": {
+        "name": "Uplink {interface} latency"
+      },
+      "uplink_loss": {
+        "name": "Uplink {interface} packet loss"
       }
     },
     "switch": {

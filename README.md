@@ -23,6 +23,35 @@ Home Assistant device with:
 | **Status** | `online`, `offline`, `alerting` or `dormant`, as reported by the Dashboard. |
 | **Clients** | Number of clients currently online on the device. Access points, switches and security appliances only. |
 
+Security appliances (MX, Z) and cellular gateways (MG) get a status sensor per WAN
+uplink, named **WAN 1**, **WAN 2** or **Cellular**: `active` (carrying traffic),
+`ready` (standing by), `connecting`, `not_connected` or `failed`. Attributes show the
+uplink's IP, gateway, public IP, DNS servers and whether the address is static or from
+DHCP.
+
+Each uplink also gets **latency** (ms) and **packet loss** (%) sensors. The appliance
+measures both every minute against a probe destination (shown in the `destination`
+attribute; IPv4 is preferred when it probes several). Like the MT sensors, the
+measurements arrive a few minutes late and are written as statistics at the minute
+they were measured, so a degrading line shows up in the graphs exactly when it
+happened.
+
+For example, to be notified when the primary uplink stops carrying traffic:
+
+```yaml
+automation:
+  - alias: "WAN 1 is down"
+    triggers:
+      - trigger: state
+        entity_id: sensor.mx67_1_wan_1
+        from: active
+        for: "00:02:00"
+    actions:
+      - action: notify.notify
+        data:
+          message: "WAN 1 is {{ states('sensor.mx67_1_wan_1') }}"
+```
+
 Switches also get two entities per port:
 
 | Entity | Description |
@@ -149,8 +178,10 @@ If the API key is revoked, Home Assistant asks you to reauthenticate with a new 
 
 ## API usage
 
-Each poll makes two organization-wide requests and one client request per network that
-has an access point, switch or appliance. If the organization has switches, it also
+Each poll makes two organization-wide requests, one client request per network that
+has an access point, switch or appliance, and, if there are appliances or gateways, one
+request for uplink status and one or two for loss and latency (the API only returns
+5-minute windows; after a restart up to an hour is fetched again). If the organization has switches, it also
 makes one request per 50 switches for port configuration and port energy usage, and
 one per 20 switches each for port status and LLDP/CDP neighbors. Each switch's port
 connectors are looked up once, the first time the switch is seen. If the organization

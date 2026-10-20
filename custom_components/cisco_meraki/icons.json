@@ -26,6 +26,54 @@
       },
       "port_poe_energy": {
         "default": "mdi:lightning-bolt"
+      },
+      "uplink_wan": {
+        "default": "mdi:wan",
+        "state": {
+          "active": "mdi:wan",
+          "ready": "mdi:check-network-outline",
+          "connecting": "mdi:lan-pending",
+          "not_connected": "mdi:lan-disconnect",
+          "failed": "mdi:close-network-outline"
+        }
+      },
+      "uplink_cellular": {
+        "default": "mdi:wan",
+        "state": {
+          "active": "mdi:wan",
+          "ready": "mdi:check-network-outline",
+          "connecting": "mdi:lan-pending",
+          "not_connected": "mdi:lan-disconnect",
+          "failed": "mdi:close-network-outline"
+        }
+      },
+      "uplink": {
+        "default": "mdi:wan",
+        "state": {
+          "active": "mdi:wan",
+          "ready": "mdi:check-network-outline",
+          "connecting": "mdi:lan-pending",
+          "not_connected": "mdi:lan-disconnect",
+          "failed": "mdi:close-network-outline"
+        }
+      },
+      "uplink_wan_latency": {
+        "default": "mdi:timer-outline"
+      },
+      "uplink_wan_loss": {
+        "default": "mdi:package-variant-remove"
+      },
+      "uplink_cellular_latency": {
+        "default": "mdi:timer-outline"
+      },
+      "uplink_cellular_loss": {
+        "default": "mdi:package-variant-remove"
+      },
+      "uplink_latency": {
+        "default": "mdi:timer-outline"
+      },
+      "uplink_loss": {
+        "default": "mdi:package-variant-remove"
       }
     },
     "switch": {

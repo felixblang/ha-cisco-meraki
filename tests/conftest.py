@@ -48,6 +48,79 @@ DEVICES = [
         "productType": "switch",
         "networkId": NETWORK_ID,
     },
+    {
+        "serial": "Q2MX-MMMM-MMMM",
+        "name": "Gateway",
+        "model": "MX67",
+        "mac": "aa:bb:cc:00:00:04",
+        "productType": "appliance",
+        "networkId": NETWORK_ID,
+    },
+]
+
+
+def _quality_points(
+    start: datetime, latencies: list[float | None], loss: float
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "ts": (start + timedelta(minutes=i)).isoformat().replace("+00:00", "Z"),
+            "latencyMs": latency,
+            "lossPercent": loss,
+        }
+        for i, latency in enumerate(latencies)
+    ]
+
+
+QUALITY_START = datetime(2026, 10, 20, 9, 0, 25, tzinfo=UTC)
+
+# WAN 1 is probed over IPv4 and IPv6; WAN 2 is down and loses every probe.
+UPLINK_LOSS_AND_LATENCY = [
+    {
+        "serial": "Q2MX-MMMM-MMMM",
+        "uplink": "wan1",
+        "ip": "2620:12f:c00c::a",
+        "timeSeries": _quality_points(QUALITY_START, [99.0] * 7, 50.0),
+    },
+    {
+        "serial": "Q2MX-MMMM-MMMM",
+        "uplink": "wan1",
+        "ip": "8.8.8.8",
+        "timeSeries": _quality_points(QUALITY_START, [20, 22, 24, 26, 28, 30, 32], 0.0),
+    },
+    {
+        "serial": "Q2MX-MMMM-MMMM",
+        "uplink": "wan2",
+        "ip": "8.8.8.8",
+        "timeSeries": _quality_points(QUALITY_START, [None] * 7, 100.0),
+    },
+]
+
+UPLINK_STATUSES = [
+    {
+        "serial": "Q2MX-MMMM-MMMM",
+        "model": "MX67",
+        "networkId": NETWORK_ID,
+        "uplinks": [
+            {
+                "interface": "wan1",
+                "status": "active",
+                "ip": "192.0.2.10",
+                "gateway": "192.0.2.1",
+                "publicIp": "198.51.100.7",
+                "primaryDns": "192.0.2.1",
+                "secondaryDns": None,
+                "ipAssignedBy": "dhcp",
+            },
+            {"interface": "wan2", "status": "not connected"},
+            {"interface": "cellular", "status": "ready"},
+        ],
+    },
+    # Devices outside the configured networks are ignored.
+    {
+        "serial": "Q2XX-XXXX-XXXX",
+        "uplinks": [{"interface": "wan1", "status": "active"}],
+    },
 ]
 
 SWITCH_PORTS = [
@@ -246,6 +319,12 @@ def mock_client() -> Generator[MagicMock]:
         return_value=list(AVAILABILITIES)
     )
     client.networks.getNetworkClients = AsyncMock(return_value=list(CLIENTS))
+    client.organizations.getOrganizationUplinksStatuses = AsyncMock(
+        return_value=deepcopy(UPLINK_STATUSES)
+    )
+    client.organizations.getOrganizationDevicesUplinksLossAndLatency = AsyncMock(
+        return_value=deepcopy(UPLINK_LOSS_AND_LATENCY)
+    )
     client.switch.getOrganizationSwitchPortsBySwitch = AsyncMock(
         return_value=deepcopy(SWITCH_PORTS)
     )

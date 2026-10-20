@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -11,13 +12,13 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy, UnitOfPower
+from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower, UnitOfTime
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .const import CLIENT_PRODUCT_TYPES, DEVICE_STATUSES, DOMAIN
+from .const import CLIENT_PRODUCT_TYPES, DEVICE_STATUSES, DOMAIN, UPLINK_STATUSES
 from .entity import MerakiEntity, MerakiPortEntity, async_setup_port_entities
 from .readings import ENERGY_SOURCE_METRIC, METRICS
 from .sensor_coordinator import (
@@ -37,6 +38,8 @@ if TYPE_CHECKING:
         MerakiConfigEntry,
         MerakiDataUpdateCoordinator,
         MerakiDevice,
+        MerakiUplink,
+        MerakiUplinkQuality,
     )
     from .readings import MerakiMetric, MerakiReading
 
@@ -107,6 +110,33 @@ async def async_setup_entry(
 
     for factory in (MerakiPortPoePowerSensor, MerakiPortPoeEnergySensor):
         async_setup_port_entities(entry, async_add_entities, factory, _has_poe_energy)
+
+    known_uplinks: set[tuple[str, str]] = set()
+    known_quality: set[tuple[str, str]] = set()
+
+    @callback
+    def _async_add_new_uplinks() -> None:
+        current = {
+            (serial, interface)
+            for serial, uplinks in coordinator.data.uplinks.items()
+            for interface in uplinks
+        }
+        if new := current - known_uplinks:
+            known_uplinks.update(new)
+            async_add_entities(
+                MerakiUplinkSensor(coordinator, serial, interface)
+                for serial, interface in sorted(new)
+            )
+        if new_quality := coordinator.data.uplink_quality.keys() - known_quality:
+            known_quality.update(new_quality)
+            async_add_entities(
+                sensor(coordinator, serial, interface)
+                for serial, interface in sorted(new_quality)
+                for sensor in (MerakiUplinkLatencySensor, MerakiUplinkLossSensor)
+            )
+
+    _async_add_new_uplinks()
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_new_uplinks))
 
 
 @callback
@@ -304,3 +334,138 @@ class MerakiPortPoeEnergySensor(MerakiPortEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return where the energy statistics are, for the energy dashboard."""
         return {"statistic_id": self._statistic_id}
+
+
+class MerakiUplinkSensor(MerakiEntity, SensorEntity):
+    """Status of a WAN uplink of an appliance or gateway."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = UPLINK_STATUSES
+
+    def __init__(
+        self, coordinator: MerakiDataUpdateCoordinator, serial: str, interface: str
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, serial, f"uplink_{interface}")
+        self._interface = interface
+        self._attr_translation_key, self._attr_translation_placeholders = (
+            _uplink_translation(interface)
+        )
+
+    @property
+    def _uplink(self) -> MerakiUplink | None:
+        return self.coordinator.data.uplinks.get(self._serial, {}).get(self._interface)
+
+    @property
+    def available(self) -> bool:
+        """Return False if the uplink is no longer reported."""
+        return super().available and self._uplink is not None
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the uplink status, e.g. active or failed."""
+        uplink = self._uplink
+        return uplink.status if uplink else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the uplink's addressing."""
+        uplink = self._uplink
+        if uplink is None:
+            return {}
+        return {
+            "ip": uplink.ip,
+            "gateway": uplink.gateway,
+            "public_ip": uplink.public_ip,
+            "primary_dns": uplink.primary_dns,
+            "secondary_dns": uplink.secondary_dns,
+            "ip_assigned_by": uplink.ip_assigned_by,
+        }
+
+
+class MerakiUplinkQualitySensor(MerakiEntity, SensorEntity):
+    """
+    Loss or latency of a WAN uplink, measured by the appliance every minute.
+
+    Like the MT sensors, the measurements arrive minutes late; their statistics are
+    rewritten with the measurement times, see MerakiReadingSensor.
+    """
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+    _metric: str
+
+    def __init__(
+        self, coordinator: MerakiDataUpdateCoordinator, serial: str, interface: str
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, serial, f"uplink_{interface}_{self._metric}")
+        self._interface = interface
+        key, placeholders = _uplink_translation(interface)
+        self._attr_translation_key = f"{key}_{self._metric}"
+        self._attr_translation_placeholders = placeholders
+
+    async def async_added_to_hass(self) -> None:
+        """Write the statistics that waited for this sensor to be added."""
+        await super().async_added_to_hass()
+        self.hass.loop.call_soon(self._async_write_statistics)
+
+    @callback
+    def _async_write_statistics(self) -> None:
+        self.coordinator.uplink_stats.async_write(dt_util.utcnow())
+
+    @property
+    def _quality(self) -> MerakiUplinkQuality | None:
+        return self.coordinator.data.uplink_quality.get((self._serial, self._interface))
+
+    @property
+    def available(self) -> bool:
+        """Return False until a measurement is available."""
+        return super().available and self._quality is not None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return when and against which destination it was measured."""
+        quality = self._quality
+        if quality is None:
+            return {}
+        return {
+            "measured_at": quality.ts.isoformat(),
+            "destination": quality.destination,
+        }
+
+
+class MerakiUplinkLatencySensor(MerakiUplinkQualitySensor):
+    """Latency of a WAN uplink."""
+
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MILLISECONDS
+    _metric = "latency"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the newest latency."""
+        quality = self._quality
+        return quality.latency if quality else None
+
+
+class MerakiUplinkLossSensor(MerakiUplinkQualitySensor):
+    """Packet loss of a WAN uplink."""
+
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _metric = "loss"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the newest packet loss."""
+        quality = self._quality
+        return quality.loss if quality else None
+
+
+def _uplink_translation(interface: str) -> tuple[str, dict[str, str]]:
+    """Return the translation key and placeholders naming an uplink."""
+    if match := re.fullmatch(r"wan(\d+)", interface):
+        return "uplink_wan", {"number": match.group(1)}
+    if interface == "cellular":
+        return "uplink_cellular", {}
+    return "uplink", {"interface": interface}

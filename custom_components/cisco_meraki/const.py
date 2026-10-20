@@ -22,6 +22,12 @@ PORT_CHANGE_REFRESH_DELAYS = (45, 90)
 PORT_USAGE_MIN_SPAN = timedelta(hours=1)
 PORT_USAGE_MAX_BACKFILL = timedelta(hours=24)
 
+# Uplink loss and latency can only be requested in windows of at most 5 minutes that
+# end at least 2 minutes ago; after a restart, at most this much is fetched again.
+UPLINK_QUALITY_WINDOW = timedelta(minutes=5)
+UPLINK_QUALITY_DELAY = timedelta(minutes=2)
+UPLINK_QUALITY_MAX_BACKFILL = timedelta(hours=1)
+
 # Look-back window used when counting online clients per device.
 CLIENT_TIMESPAN_SECONDS = 3600
 
@@ -29,3 +35,8 @@ CLIENT_TIMESPAN_SECONDS = 3600
 CLIENT_PRODUCT_TYPES = frozenset({"appliance", "switch", "wireless"})
 
 DEVICE_STATUSES = ["online", "offline", "alerting", "dormant"]
+
+# Devices with WAN uplinks: security appliances, teleworker gateways and cellular
+# gateways.
+UPLINK_PRODUCT_TYPES = frozenset({"appliance", "cellularGateway"})
+UPLINK_STATUSES = ["active", "ready", "connecting", "not_connected", "failed"]
