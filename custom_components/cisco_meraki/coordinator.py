@@ -53,6 +53,9 @@ type MerakiConfigEntry = ConfigEntry[MerakiDataUpdateCoordinator]
 
 # An energy interval's Wh, divided by its length in hours, is its average power.
 WATT_HOURS_TO_WATTS = HOUR / SHORT_TERM
+# A longer gap between port usage intervals is taken as the switch not reporting,
+# not as intervals Meraki merged into one.
+MAX_MERGED_INTERVAL = 3 * SHORT_TERM
 
 
 @dataclass(slots=True)
@@ -525,11 +528,13 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
                 port = ports.get(usage_port.get("portId"))
                 if port is None:
                     continue
-                intervals = sorted(
-                    (ts, wh)
-                    for interval in usage_port.get("intervals", [])
-                    if (ts := dt_util.parse_datetime(interval.get("startTs") or ""))
-                    and (wh := _interval_energy(interval)) is not None
+                intervals = _energy_slots(
+                    sorted(
+                        (dt_util.as_utc(ts), wh)
+                        for interval in usage_port.get("intervals", [])
+                        if (ts := dt_util.parse_datetime(interval.get("startTs") or ""))
+                        and (wh := _interval_energy(interval)) is not None
+                    )
                 )
                 if not intervals:
                     continue
@@ -547,12 +552,11 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
                     data, serial, f"port_{port.port_id}_poe_power"
                 )
                 for ts, wh in intervals:
-                    utc = dt_util.as_utc(ts)
                     # Rounded to the milliwatt, which is far below Meraki's 1.2 W steps.
                     watts = round(wh * WATT_HOURS_TO_WATTS, 3)
-                    stat.add(utc, wh)
-                    power_stat.add(utc, watts)
-                    totals[utc] = round(totals.get(utc, 0.0) + watts, 3)
+                    stat.add(ts, wh)
+                    power_stat.add(ts, watts)
+                    totals[ts] = round(totals.get(ts, 0.0) + watts, 3)
                 self._poe_power[(serial, port.port_id)] = round(
                     intervals[-1][1] * WATT_HOURS_TO_WATTS, 3
                 )
@@ -583,14 +587,19 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
     ) -> datetime:
         """Return the time from which port energy has to be fetched."""
         if not self.port_energy.statistics:
-            # First run: continue where the statistics of PoE ports left off.
+            # First run: continue where the statistics of PoE ports left off. The
+            # power statistics resume a little earlier, to rewrite the newest hours.
             for serial, ports in data.ports.items():
                 for port in ports.values():
                     if port.poe_enabled:
                         await self._async_port_energy_statistic(data, serial, port)
+                        await self._async_poe_power_statistic(
+                            data, serial, f"port_{port.port_id}_poe_power"
+                        )
             resume = [
                 stat.hour_done
-                for stat in self.port_energy.statistics.values()
+                for writer in (self.port_energy, self.poe_power_stats)
+                for stat in writer.statistics.values()
                 if stat.hour_done is not None
             ]
             start = min(resume, default=now - 2 * HOUR)
@@ -765,6 +774,29 @@ def _connector(capabilities: list[str] | None) -> str | None:
     if any("Megabit" in capability for capability in capabilities):
         return "RJ45"
     return "SFP"
+
+
+def _energy_slots(
+    intervals: list[tuple[datetime, float]],
+) -> list[tuple[datetime, float]]:
+    """
+    Return the energy (Wh) per 5-minute slot of a port's usage intervals.
+
+    Meraki sometimes leaves out an interval and reports its energy with the one
+    before, still labelled as 5 minutes long. Taken at face value, that interval
+    would show double the power and the missing one none, so the energy of an
+    interval followed by a short gap is spread over the slots up to the next one.
+    """
+    slots: list[tuple[datetime, float]] = []
+    if not intervals:
+        return slots
+    next_starts: list[datetime | None] = [start for start, _ in intervals[1:]]
+    for (start, wh), next_start in zip(intervals, [*next_starts, None], strict=True):
+        count = 1
+        if next_start is not None and next_start - start <= MAX_MERGED_INTERVAL:
+            count = max(round((next_start - start) / SHORT_TERM), 1)
+        slots.extend((start + SHORT_TERM * slot, wh / count) for slot in range(count))
+    return slots
 
 
 def _interval_energy(interval: dict[str, Any]) -> float | None:
