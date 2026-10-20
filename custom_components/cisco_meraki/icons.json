@@ -74,6 +74,9 @@
       },
       "uplink_loss": {
         "default": "mdi:package-variant-remove"
+      },
+      "poe_power": {
+        "default": "mdi:flash"
       }
     },
     "switch": {

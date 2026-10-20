@@ -16,7 +16,6 @@ from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower, UnitOfTim
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util import dt as dt_util
 
 from .const import CLIENT_PRODUCT_TYPES, DEVICE_STATUSES, DOMAIN, UPLINK_STATUSES
 from .entity import MerakiEntity, MerakiPortEntity, async_setup_port_entities
@@ -103,13 +102,31 @@ async def async_setup_entry(
     if coordinator.sensors:
         _async_setup_reading_sensors(entry, coordinator.sensors, async_add_entities)
 
-    def _has_poe_energy(
+    def _has_poe(
         coordinator: MerakiDataUpdateCoordinator, serial: str, port_id: str
     ) -> bool:
-        return coordinator.port_energy_total(serial, port_id) is not None
+        # Created as soon as the port delivers PoE; energy follows with the first
+        # 5-minute interval Meraki reports.
+        return (
+            coordinator.data.ports[serial][port_id].poe_active
+            or coordinator.port_energy_total(serial, port_id) is not None
+        )
 
     for factory in (MerakiPortPoePowerSensor, MerakiPortPoeEnergySensor):
-        async_setup_port_entities(entry, async_add_entities, factory, _has_poe_energy)
+        async_setup_port_entities(entry, async_add_entities, factory, _has_poe)
+
+    known_poe_switches: set[str] = set()
+
+    @callback
+    def _async_add_poe_switches() -> None:
+        if new := coordinator.data.switch_poe_power.keys() - known_poe_switches:
+            known_poe_switches.update(new)
+            async_add_entities(
+                MerakiSwitchPoePowerSensor(coordinator, serial) for serial in new
+            )
+
+    _async_add_poe_switches()
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_poe_switches))
 
     known_uplinks: set[tuple[str, str]] = set()
     known_quality: set[tuple[str, str]] = set()
@@ -234,7 +251,7 @@ class MerakiReadingSensor(MerakiSensorReadingEntity):
 
     @callback
     def _async_write_statistics(self) -> None:
-        self.coordinator.writer.async_write(dt_util.utcnow())
+        self.coordinator.writer.async_write()
 
     @property
     def _reading(self) -> MerakiReading | None:
@@ -289,10 +306,17 @@ def _snake(key: str) -> str:
 
 
 class MerakiPortPoePowerSensor(MerakiPortEntity, SensorEntity):
-    """PoE power a switch port delivered during the newest reported interval."""
+    """
+    PoE power a switch port delivered during the newest reported interval.
+
+    Meraki reports PoE energy per 5-minute interval, minutes after it ends; the
+    statistics are rewritten with each interval's average power at its own time, so
+    the graph shows 5-minute and hourly mean, minimum and maximum.
+    """
 
     _attr_device_class = SensorDeviceClass.POWER
     _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 1
     _attr_translation_key = "port_poe_power"
 
@@ -301,6 +325,11 @@ class MerakiPortPoePowerSensor(MerakiPortEntity, SensorEntity):
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, serial, port_id, "poe_power")
+
+    async def async_added_to_hass(self) -> None:
+        """Write the statistics that waited for this sensor to be added."""
+        await super().async_added_to_hass()
+        self.hass.loop.call_soon(self.coordinator.poe_power_stats.async_write)
 
     @property
     def native_value(self) -> float | None:
@@ -412,7 +441,7 @@ class MerakiUplinkQualitySensor(MerakiEntity, SensorEntity):
 
     @callback
     def _async_write_statistics(self) -> None:
-        self.coordinator.uplink_stats.async_write(dt_util.utcnow())
+        self.coordinator.uplink_stats.async_write()
 
     @property
     def _quality(self) -> MerakiUplinkQuality | None:
@@ -469,3 +498,34 @@ def _uplink_translation(interface: str) -> tuple[str, dict[str, str]]:
     if interface == "cellular":
         return "uplink_cellular", {}
     return "uplink", {"interface": interface}
+
+
+class MerakiSwitchPoePowerSensor(MerakiEntity, SensorEntity):
+    """Total PoE power a switch delivered during the newest reported interval."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+    _attr_translation_key = "poe_power"
+
+    def __init__(self, coordinator: MerakiDataUpdateCoordinator, serial: str) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, serial, "poe_power")
+
+    async def async_added_to_hass(self) -> None:
+        """Write the statistics that waited for this sensor to be added."""
+        await super().async_added_to_hass()
+        self.hass.loop.call_soon(self.coordinator.poe_power_stats.async_write)
+
+    @property
+    def available(self) -> bool:
+        """Return False until the switch's PoE power is known."""
+        return (
+            super().available and self._serial in self.coordinator.data.switch_poe_power
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the sum of the PoE power of all ports."""
+        return self.coordinator.data.switch_poe_power.get(self._serial)

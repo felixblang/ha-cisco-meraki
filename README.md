@@ -61,7 +61,15 @@ Switches also get two entities per port:
 
 Ports that deliver PoE also get **Port _n_ PoE power** (average W over the newest
 5-minute interval) and **Port _n_ PoE energy** (kWh), and the link sensor's `poe`
-attribute shows whether PoE is active. That covers devices that only draw power and
+attribute shows whether PoE is active. The PoE sensors appear as soon as a port starts
+delivering PoE; their values follow once Meraki reports the first 5-minute interval,
+usually within 5 to 10 minutes. Each switch also gets a **PoE power** sensor with the
+total of all its ports.
+
+Meraki reports PoE energy in steps of 0.1 Wh per 5-minute interval, so PoE power moves
+in steps of 1.2 W. Like the MT sensors, the PoE power sensors write their statistics
+at the time of each interval, so their graphs show the 5-minute values and, for longer
+periods, the hourly mean, minimum and maximum. That covers devices that only draw power and
 have no network link, such as Meraki MT sensors. Like the MT40's energy, PoE energy is
 written as statistics for the 5-minute intervals in which it was used; see the
 `statistic_id` attribute.
@@ -71,20 +79,27 @@ switch off:
 
 - `neighbor`: the LLDP system name (or CDP device ID) of the device on the other end,
   such as an access point or another switch.
-- `clients`: wired clients seen on the port in the last hour, by their Dashboard name.
+- `clients`: wired clients currently online on the port, by their Dashboard name.
+
+Meraki keeps a port's LLDP/CDP data after the device is unplugged and only updates it
+when a new neighbor announces itself. The integration therefore hides the neighbor
+while a port has no link, and after the link comes back until Meraki reports newer
+data, so a device that does not speak LLDP leaves the field empty instead of showing
+the previous one.
 
 > [!WARNING]
 > Turning off a port disconnects whatever is plugged into it, which may be the device
 > running Home Assistant. Switches for uplink and stacking ports are created disabled;
 > enable them in the entity settings only if you really want to control them.
 
-New devices and ports are picked up on the next poll. Data refreshes every 5 minutes,
-so a port change made in the Dashboard can take up to 5 minutes to show up.
+Device, port and uplink status are polled every minute, so new devices and ports,
+and changes made in the Dashboard, show up within a minute or so. PoE energy and MT
+sensor readings are polled every 5 minutes, since they only change in 5-minute
+intervals or arrive in 20-minute batches.
 
 When you turn a port on or off in Home Assistant, the switch shows the new setting
 right away. The Meraki switch itself applies the change on its next sync with the
-Dashboard, usually within a minute or two. The integration polls again 45 and 90
-seconds after the change so that the link sensor follows.
+Dashboard, usually within a minute or two, and the link sensor follows on a later poll.
 
 ### MT sensors
 
@@ -131,9 +146,10 @@ MQTT batches are no faster than the API: sensors publish their readings every 20
 minutes or so. Some sensors, such as an MT40 the Dashboard reports as dormant, may only
 deliver their readings over MQTT.
 
-Hourly statistics are written about 15 minutes after the hour, once Home Assistant
-has rolled up the hour's 5-minute statistics. After a restart the integration fetches
-readings again from the last complete hour, up to 24 hours back.
+Statistics are only written for periods Home Assistant has already compiled itself,
+so they never get in the way of its own statistics, also not while it catches up after
+a restart. After a restart the integration fetches readings again from the last
+complete hour, up to 24 hours back.
 
 > [!NOTE]
 > Home Assistant only offers a public way to write hourly statistics. The 5-minute
@@ -178,18 +194,22 @@ If the API key is revoked, Home Assistant asks you to reauthenticate with a new 
 
 ## API usage
 
-Each poll makes two organization-wide requests, one client request per network that
-has an access point, switch or appliance, and, if there are appliances or gateways, one
-request for uplink status and one or two for loss and latency (the API only returns
-5-minute windows; after a restart up to an hour is fetched again). If the organization has switches, it also
-makes one request per 50 switches for port configuration and port energy usage, and
-one per 20 switches each for port status and LLDP/CDP neighbors. Each switch's port
-connectors are looked up once, the first time the switch is seen. If the organization
-has MT sensors, it reads their readings history; fast metrics such as PM2.5 report
-every second, so this is usually a few pages per poll.
+Every minute, the integration makes two organization-wide requests for devices and
+their status, and one client request per network that has an access point, switch or
+appliance. If there are appliances or gateways, it adds one request for uplink status
+and one or two for loss and latency (the API only returns 5-minute windows; after a
+restart up to an hour is fetched again). If there are switches, it adds one request per
+50 switches for port configuration and one per 20 switches each for port status and
+LLDP/CDP neighbors.
 
-The Meraki API allows 10 requests per second per organization; the integration retries
-automatically when it is rate limited.
+Every 5 minutes, it also requests PoE energy (one request per 50 switches) and, if the
+organization has MT sensors, their readings history; fast metrics such as PM2.5 report
+every second, so this is usually a few pages. Each switch's port connectors are looked
+up once, the first time the switch is seen.
+
+For a small organization that is around 10 requests a minute. The Meraki API allows
+10 requests per second per organization; the integration retries automatically when it
+is rate limited.
 
 ## Development
 

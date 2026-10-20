@@ -21,6 +21,7 @@ from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
@@ -31,7 +32,6 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 
 from custom_components.cisco_meraki.const import (
     DEFAULT_SCAN_INTERVAL,
-    PORT_CHANGE_REFRESH_DELAYS,
 )
 
 from .conftest import SWITCH_PORT_STATUSES, USAGE_START, make_api_error
@@ -143,19 +143,64 @@ async def test_no_switches_skips_port_requests(
 
 @pytest.mark.usefixtures("setup_entry")
 async def test_port_neighbors_and_clients(hass: HomeAssistant) -> None:
-    """Ports show their LLDP neighbor and the wired clients seen on them."""
+    """Ports show their LLDP neighbor and the wired clients online on them."""
     port1 = hass.states.get("switch.core_switch_port_1")
-    assert port1.attributes["neighbor"] is None
-    # Clients without a description fall back to their MAC address.
+    # Without a system name, the chassis ID identifies the neighbor.
+    assert port1.attributes["neighbor"] == "bb:bb:bb:bb:bb:bb"
+    # Only online clients; those without a description show their MAC address.
     assert port1.attributes["clients"] == ["aa:bb:cc:dd:ee:ff", "office-pc"]
 
     uplink_link = hass.states.get("binary_sensor.core_switch_port_8_link")
     assert uplink_link.attributes["neighbor"] == "Router"
     assert uplink_link.attributes["clients"] == []
 
-    # Without a system name, the chassis ID identifies the neighbor.
-    port2 = hass.states.get("switch.core_switch_port_2")
-    assert port2.attributes["neighbor"] == "bb:bb:bb:bb:bb:bb"
+    # A port without a link has no neighbor, whatever Meraki still remembers.
+    assert hass.states.get("switch.core_switch_port_2").attributes["neighbor"] is None
+
+
+async def test_neighbor_of_previous_device_is_dropped(
+    hass: HomeAssistant,
+    mock_client: MagicMock,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """After a device is swapped, the old device's LLDP data is not shown."""
+    freezer.move_to("2026-10-20T10:00:00Z")
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    get_statuses = mock_client.switch.getOrganizationSwitchPortsStatusesBySwitch
+    get_topology = (
+        mock_client.switch.getOrganizationSwitchPortsTopologyDiscoveryByDevice
+    )
+
+    async def poll() -> None:
+        freezer.tick(DEFAULT_SCAN_INTERVAL + timedelta(seconds=1))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    def set_port8(status: str) -> None:
+        statuses = deepcopy(SWITCH_PORT_STATUSES)
+        statuses["items"][0]["ports"][2]["status"] = status
+        get_statuses.return_value = statuses
+
+    link = "binary_sensor.core_switch_port_8_link"
+    # The router is unplugged and another device is plugged in.
+    set_port8("Disconnected")
+    await poll()
+    assert hass.states.get(link).attributes["neighbor"] is None
+    set_port8("Connected")
+    await poll()
+    # Meraki still reports the router from 08:00.
+    assert hass.states.get(link).attributes["neighbor"] is None
+
+    # The new device announces itself over LLDP.
+    topology = deepcopy(get_topology.return_value)
+    topology["items"][0]["ports"][0]["lastUpdatedAt"] = dt_util.utcnow().isoformat()
+    topology["items"][0]["ports"][0]["lldp"][0]["value"] = "New switch"
+    get_topology.return_value = topology
+    await poll()
+    assert hass.states.get(link).attributes["neighbor"] == "New switch"
 
 
 async def test_topology_failure_is_not_fatal(
@@ -171,36 +216,6 @@ async def test_topology_failure_is_not_fatal(
     port8 = hass.states.get("binary_sensor.core_switch_port_8_link")
     assert port8.state == "on"
     assert port8.attributes["neighbor"] is None
-
-
-@pytest.mark.usefixtures("setup_entry")
-async def test_refresh_after_toggle(
-    hass: HomeAssistant, mock_client: MagicMock, freezer: FrozenDateTimeFactory
-) -> None:
-    """The link state is polled again shortly after a port change."""
-    get_statuses = mock_client.switch.getOrganizationSwitchPortsStatusesBySwitch
-    assert get_statuses.await_count == 1
-
-    await hass.services.async_call(
-        SWITCH_DOMAIN,
-        SERVICE_TURN_OFF,
-        {ATTR_ENTITY_ID: "switch.core_switch_port_1"},
-        blocking=True,
-    )
-    # The switch applies the change and the port goes down.
-    statuses = deepcopy(SWITCH_PORT_STATUSES)
-    statuses["items"][0]["ports"][0]["status"] = "Disabled"
-    get_statuses.return_value = statuses
-
-    elapsed = 0
-    for refreshes, delay in enumerate(PORT_CHANGE_REFRESH_DELAYS, start=2):
-        freezer.tick(timedelta(seconds=delay - elapsed + 1))
-        elapsed = delay + 1
-        async_fire_time_changed(hass)
-        await hass.async_block_till_done(wait_background_tasks=True)
-        assert get_statuses.await_count == refreshes
-
-    assert hass.states.get("binary_sensor.core_switch_port_1_link").state == "off"
 
 
 async def test_port_connector(
@@ -277,3 +292,103 @@ async def test_port_poe(
     )
     # The 09:00 hour holds the twelve intervals that started in it.
     assert [row["sum"] for row in stats[statistic]] == pytest.approx([0.0012])
+
+    # PoE power has statistics at the times of Meraki's 5-minute intervals.
+    power = hass.states.get("sensor.core_switch_port_2_poe_power")
+    assert power.attributes["state_class"] == "measurement"
+    power_stats = await get_instance(hass).async_add_executor_job(
+        statistics_during_period,
+        hass,
+        USAGE_START,
+        None,
+        {"sensor.core_switch_port_2_poe_power"},
+        "5minute",
+        None,
+        {"mean"},
+    )
+    rows = power_stats["sensor.core_switch_port_2_poe_power"]
+    assert dt_util.utc_from_timestamp(rows[0]["start"]) == USAGE_START
+    assert rows[0]["mean"] == pytest.approx(1.2)
+
+    # The switch's total PoE power adds up its ports.
+    total = hass.states.get("sensor.core_switch_poe_power")
+    assert float(total.state) == pytest.approx(1.2)
+    assert total.attributes["state_class"] == "measurement"
+
+
+@pytest.mark.usefixtures("mock_client")
+async def test_poe_sensors_before_first_energy_interval(
+    hass: HomeAssistant,
+    mock_client: MagicMock,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """PoE sensors appear as soon as a port delivers PoE, before energy is known."""
+    get_usage = (
+        mock_client.switch.getOrganizationSwitchPortsUsageHistoryByDeviceByInterval
+    )
+    get_usage.return_value = {"items": []}
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.core_switch_port_2_poe_power").state == "unknown"
+    assert hass.states.get("sensor.core_switch_port_2_poe_energy").state == "unknown"
+
+
+@pytest.mark.usefixtures("mock_client")
+async def test_port_energy_fetched_every_five_minutes(
+    hass: HomeAssistant,
+    mock_client: MagicMock,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Port status is polled every minute, PoE energy only every 5 minutes."""
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    get_usage = (
+        mock_client.switch.getOrganizationSwitchPortsUsageHistoryByDeviceByInterval
+    )
+    get_statuses = mock_client.switch.getOrganizationSwitchPortsStatusesBySwitch
+
+    for _ in range(4):
+        freezer.tick(DEFAULT_SCAN_INTERVAL + timedelta(seconds=1))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done(wait_background_tasks=True)
+    assert get_statuses.await_count == 5
+    assert get_usage.await_count == 1
+    # The power of the newest interval is kept between energy fetches.
+    assert float(hass.states.get("sensor.core_switch_port_2_poe_power").state) == (
+        pytest.approx(1.2)
+    )
+
+    freezer.tick(DEFAULT_SCAN_INTERVAL + timedelta(seconds=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert get_usage.await_count == 2
+
+
+@pytest.mark.usefixtures("mock_client")
+async def test_switch_poe_power_adds_up_ports(
+    hass: HomeAssistant,
+    mock_client: MagicMock,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """The total adds the PoE power of all ports in the same interval."""
+    get_usage = (
+        mock_client.switch.getOrganizationSwitchPortsUsageHistoryByDeviceByInterval
+    )
+    usage = deepcopy(get_usage.return_value)
+    # Port 1 now powers a device too: 0.2 Wh per 5 minutes is 2.4 W.
+    port1, port2 = usage["items"][0]["ports"][:2]
+    port1["intervals"] = deepcopy(port2["intervals"])
+    for interval in port1["intervals"]:
+        interval["energy"]["usage"]["total"] = 0.2
+    get_usage.return_value = usage
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert float(hass.states.get("sensor.core_switch_poe_power").state) == (
+        pytest.approx(1.2 + 2.4)
+    )

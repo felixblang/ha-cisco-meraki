@@ -11,11 +11,12 @@ MANUFACTURER = "Cisco Meraki"
 CONF_ORGANIZATION_ID = "organization_id"
 CONF_NETWORKS = "networks"
 
-DEFAULT_SCAN_INTERVAL = timedelta(minutes=5)
-
-# Seconds after a port change at which to poll again, to pick up the new link state
-# once the switch has applied the change.
-PORT_CHANGE_REFRESH_DELAYS = (45, 90)
+# Device, port and uplink status.
+DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
+# MT sensor readings arrive in batches about every 20 minutes, and PoE energy in
+# 5-minute intervals, so polling them more often only fetches the same data again.
+SENSOR_SCAN_INTERVAL = timedelta(minutes=5)
+PORT_ENERGY_INTERVAL = timedelta(minutes=5)
 
 # Port energy usage is fetched for at least this span (shorter ones return nothing)
 # and at most this far back after a restart.

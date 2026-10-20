@@ -15,7 +15,7 @@ from homeassistant.util import dt as dt_util
 from meraki import APIError
 
 from .api import is_auth_error
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, LOGGER
+from .const import DOMAIN, LOGGER, SENSOR_SCAN_INTERVAL
 from .readings import ENERGY_SOURCE_METRIC, METRICS, MerakiReading, parse_reading
 from .stats import (
     HOUR,
@@ -77,7 +77,7 @@ class MerakiSensorCoordinator(DataUpdateCoordinator[LatestReadings]):
             LOGGER,
             config_entry=config_entry,
             name=f"{DOMAIN}_sensors",
-            update_interval=DEFAULT_SCAN_INTERVAL,
+            update_interval=SENSOR_SCAN_INTERVAL,
         )
         self.client = client
         self.devices = devices
@@ -126,7 +126,7 @@ class MerakiSensorCoordinator(DataUpdateCoordinator[LatestReadings]):
         self._mqtt_flush_unsub = None
         readings, self._mqtt_buffer = self._mqtt_buffer, []
         await self._async_add(sorted(readings, key=lambda reading: reading.ts))
-        self.writer.async_write(dt_util.utcnow())
+        await self.writer.async_refresh_and_write()
         self.async_set_updated_data(dict(self._latest))
 
     @callback
@@ -161,7 +161,7 @@ class MerakiSensorCoordinator(DataUpdateCoordinator[LatestReadings]):
             ) from err
         finally:
             # Whatever was received is kept, so write it even if a later window failed.
-            self.writer.async_write(dt_util.utcnow())
+            await self.writer.async_refresh_and_write()
         return dict(self._latest)
 
     async def _async_fetch(self) -> None:

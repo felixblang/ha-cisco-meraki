@@ -22,7 +22,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
 
-from custom_components.cisco_meraki.const import DEFAULT_SCAN_INTERVAL
+from custom_components.cisco_meraki.const import SENSOR_SCAN_INTERVAL
 from custom_components.cisco_meraki.mqtt_source import parse_message
 
 from .conftest import NETWORK_ID
@@ -167,14 +167,14 @@ async def test_mqtt_readings(
     # While the sensor publishes over MQTT, the API is not polled for it.
     history = mock_air_sensor.sensor.getOrganizationSensorReadingsHistory
     history.reset_mock()
-    freezer.tick(DEFAULT_SCAN_INTERVAL + timedelta(seconds=1))
+    freezer.tick(SENSOR_SCAN_INTERVAL + timedelta(seconds=1))
     async_fire_time_changed(hass)
     await hass.async_block_till_done(wait_background_tasks=True)
     history.assert_not_awaited()
 
     # Once it has been quiet for 30 minutes, the API takes over again.
     for _ in range(6):
-        freezer.tick(DEFAULT_SCAN_INTERVAL + timedelta(seconds=1))
+        freezer.tick(SENSOR_SCAN_INTERVAL + timedelta(seconds=1))
         async_fire_time_changed(hass)
         await hass.async_block_till_done(wait_background_tasks=True)
     history.assert_awaited()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
@@ -13,10 +13,15 @@ from homeassistant.components.recorder.statistics import statistics_during_perio
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
+
+from custom_components.cisco_meraki.const import SENSOR_SCAN_INTERVAL
 
 from .conftest import NETWORK_ID
 
@@ -222,3 +227,32 @@ async def test_statistics_follow_display_unit(
     hourly = await _statistics(hass, TEMPERATURE_STAT, "hour")
     # 20.5 °C
     assert hourly[0]["mean"] == pytest.approx(68.9)
+
+
+@pytest.mark.usefixtures("mock_sensors")
+async def test_statistics_wait_for_home_assistant(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """
+    Nothing is written for periods Home Assistant has not compiled yet.
+
+    Home Assistant inserts its own rows for every period it compiles; a row written
+    before that makes its insert fail, e.g. while it catches up after a restart.
+    """
+    freezer.move_to(NOW)
+    compiled_until = "custom_components.cisco_meraki.stats._compiled_until"
+    with patch(compiled_until, return_value=HOUR_11):
+        await _setup(hass, mock_config_entry)
+    assert await _statistics(hass, TEMPERATURE_STAT, "5minute") == []
+    assert await _statistics(hass, ENERGY_STAT, "hour") == []
+
+    # Home Assistant has caught up; the next poll writes everything.
+    with patch(compiled_until, return_value=NOW - timedelta(minutes=5)):
+        freezer.tick(SENSOR_SCAN_INTERVAL + timedelta(seconds=1))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done(wait_background_tasks=True)
+        await async_wait_recording_done(hass)
+    assert len(await _statistics(hass, TEMPERATURE_STAT, "5minute")) == 14
+    assert len(await _statistics(hass, ENERGY_STAT, "hour")) == 1

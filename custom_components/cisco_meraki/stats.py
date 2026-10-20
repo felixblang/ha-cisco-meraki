@@ -17,11 +17,15 @@ from typing import TYPE_CHECKING
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.const import DOMAIN as RECORDER_DOMAIN
-from homeassistant.components.recorder.db_schema import StatisticsShortTerm
+from homeassistant.components.recorder.db_schema import (
+    StatisticsRuns,
+    StatisticsShortTerm,
+)
 from homeassistant.components.recorder.models import (
     StatisticData,
     StatisticMeanType,
     StatisticMetaData,
+    process_timestamp,
 )
 from homeassistant.components.recorder.statistics import (
     STATISTIC_UNIT_TO_UNIT_CONVERTER,
@@ -33,7 +37,9 @@ from homeassistant.components.recorder.statistics import (
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, UnitOfEnergy
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.recorder import session_scope
 from homeassistant.util import dt as dt_util
+from sqlalchemy import func
 
 from .const import DOMAIN, LOGGER
 
@@ -44,16 +50,6 @@ if TYPE_CHECKING:
 
 SHORT_TERM = timedelta(minutes=5)
 HOUR = timedelta(hours=1)
-
-# Home Assistant rolls the 5-minute statistics of each hour up into an hourly row
-# shortly after the hour. Writing our hourly row only after that keeps the two from
-# racing; ours then replaces the roll-up, which may have missed late readings.
-HOURLY_WRITE_DELAY = timedelta(minutes=15)
-
-# Home Assistant also compiles 5-minute statistics from the states of entities with a
-# state class, right after each period ends. Ours replace those, so they are written
-# only after Home Assistant is done with the period.
-SHORT_TERM_WRITE_DELAY = timedelta(minutes=1)
 
 # Power is not integrated across gaps longer than this, e.g. while a sensor is offline.
 MAX_POWER_GAP = timedelta(minutes=10)
@@ -128,8 +124,10 @@ class MerakiStatistic:
             end += SHORT_TERM
         return self.hour_sum + self._energy(self.hour_done, end)
 
-    def collect(self, now: datetime) -> tuple[list[StatisticData], list[StatisticData]]:
-        """Return the 5-minute and hourly rows that are complete."""
+    def collect(
+        self, compiled_until: datetime
+    ) -> tuple[list[StatisticData], list[StatisticData]]:
+        """Return the complete 5-minute and hourly rows up to compiled_until."""
         short_rows: list[StatisticData] = []
         hourly_rows: list[StatisticData] = []
         if self.watermark is None or self.hour_done is None or self.short_done is None:
@@ -138,17 +136,14 @@ class MerakiStatistic:
         # A period is complete once a reading after its end has arrived; batches
         # arrive in order, so nothing older can follow.
         short_ready = min(
-            _floor(self.watermark, SHORT_TERM),
-            _floor(now - SHORT_TERM_WRITE_DELAY, SHORT_TERM),
+            _floor(self.watermark, SHORT_TERM), _floor(compiled_until, SHORT_TERM)
         )
         while self.short_done + SHORT_TERM <= short_ready:
             if row := self._row(self.short_done, self.short_done + SHORT_TERM):
                 short_rows.append(row)
             self.short_done += SHORT_TERM
 
-        hour_ready = min(
-            _floor(self.watermark, HOUR), _floor(now - HOURLY_WRITE_DELAY, HOUR)
-        )
+        hour_ready = min(_floor(self.watermark, HOUR), _floor(compiled_until, HOUR))
         while self.hour_done + HOUR <= min(hour_ready, self.short_done):
             end = self.hour_done + HOUR
             if row := self._row(self.hour_done, end):
@@ -232,6 +227,8 @@ class StatisticsWriter:
         self._hass = hass
         self.statistics: dict[str, MerakiStatistic] = {}
         self._short_term_supported = True
+        # End of the newest period Home Assistant has compiled statistics for.
+        self._compiled_until: datetime | None = None
 
     async def async_ensure(
         self,
@@ -283,11 +280,29 @@ class StatisticsWriter:
             SENSOR_DOMAIN, DOMAIN, stat.entity_unique_id
         )
 
-    def async_write(self, now: datetime) -> None:
-        """Write all complete periods."""
+    async def async_refresh_and_write(self) -> None:
+        """Find out what Home Assistant has compiled, then write what is complete."""
+        self._compiled_until = await get_instance(self._hass).async_add_executor_job(
+            _compiled_until, self._hass
+        )
+        self.async_write()
+
+    def async_write(self) -> None:
+        """
+        Write all complete periods that Home Assistant has already compiled.
+
+        Home Assistant compiles every 5-minute period (and, at the end of an hour,
+        the hour) from entity states and from the 5-minute statistics already in the
+        database, and inserts its rows. A period written before that would make its
+        insert fail, and with it everything compiled in the same run, including other
+        integrations' statistics. Written afterwards, ours replace its rows.
+        """
+        compiled_until = self._compiled_until
+        if compiled_until is None:
+            return
         for stat in self.statistics.values():
             if stat.entity_unique_id is None:
-                short_rows, hourly_rows = stat.collect(now)
+                short_rows, hourly_rows = stat.collect(compiled_until)
                 self._async_write_short_term(stat.metadata, short_rows)
                 if hourly_rows:
                     async_add_external_statistics(
@@ -299,7 +314,7 @@ class StatisticsWriter:
             if target is None:
                 # The entity is not added yet; keep the readings until it is.
                 continue
-            short_rows, hourly_rows = stat.collect(now)
+            short_rows, hourly_rows = stat.collect(compiled_until)
             if target is _DISCARD:
                 continue
             metadata, convert = target
@@ -383,3 +398,12 @@ def _convert(
         if key in row:
             converted[key] = convert(row[key])
     return converted
+
+
+def _compiled_until(hass: HomeAssistant) -> datetime | None:
+    """Return the end of the newest period the recorder compiled statistics for."""
+    with session_scope(hass=hass, read_only=True) as session:
+        start = session.query(func.max(StatisticsRuns.start)).scalar()
+    if start is None:
+        return None
+    return dt_util.as_utc(process_timestamp(start)) + SHORT_TERM

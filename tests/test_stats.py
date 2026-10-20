@@ -60,13 +60,18 @@ def test_incomplete_periods_wait() -> None:
     assert hourly == []
 
 
-def test_hourly_waits_for_roll_up() -> None:
-    """The hourly row waits until Home Assistant has rolled up the hour itself."""
+def test_waits_for_home_assistant_to_compile() -> None:
+    """Rows are only written for periods Home Assistant has compiled itself."""
     stat = _stat(StatisticKind.MEAN)
     _minutes(stat, {0: 10, 61: 20})
-    _, hourly = stat.collect(T0 + timedelta(minutes=70))
+
+    # Home Assistant has only compiled up to 10:30.
+    short, hourly = stat.collect(T0 + timedelta(minutes=30))
+    assert [row["start"] for row in short] == [T0]
     assert hourly == []
-    _, hourly = stat.collect(T0 + timedelta(minutes=76))
+
+    # Once it has compiled the whole hour, the hour can be written too.
+    _, hourly = stat.collect(T0 + timedelta(minutes=60))
     assert [row["start"] for row in hourly] == [T0]
 
 

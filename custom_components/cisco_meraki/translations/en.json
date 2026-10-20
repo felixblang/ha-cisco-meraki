@@ -184,6 +184,9 @@
       },
       "uplink_loss": {
         "name": "Uplink {interface} packet loss"
+      },
+      "poe_power": {
+        "name": "PoE power"
       }
     },
     "switch": {

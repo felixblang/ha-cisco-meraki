@@ -220,11 +220,18 @@ CLIENTS = [
         "description": "office-pc",
     },
     {
-        "status": "Offline",
+        "status": "Online",
         "recentDeviceSerial": "Q2SW-SSSS-SSSS",
         "switchport": "1",
         "description": None,
         "mac": "aa:bb:cc:dd:ee:ff",
+    },
+    # Seen on port 1 earlier in the hour, but unplugged since.
+    {
+        "status": "Offline",
+        "recentDeviceSerial": "Q2SW-SSSS-SSSS",
+        "switchport": "1",
+        "description": "unplugged-pc",
     },
 ]
 
@@ -269,6 +276,7 @@ SWITCH_PORT_TOPOLOGY = {
             "ports": [
                 {
                     "portId": "8",
+                    "lastUpdatedAt": "2026-10-20T08:00:00Z",
                     "lldp": [
                         {"name": "System name", "value": "Router"},
                         {"name": "Chassis ID", "value": "aa:aa:aa:aa:aa:aa"},
@@ -276,8 +284,16 @@ SWITCH_PORT_TOPOLOGY = {
                     "cdp": [],
                 },
                 {
-                    "portId": "2",
+                    "portId": "1",
+                    "lastUpdatedAt": "2026-10-20T08:00:00Z",
                     "lldp": [{"name": "Chassis ID", "value": "bb:bb:bb:bb:bb:bb"}],
+                    "cdp": [],
+                },
+                # Port 2 has no link; Meraki still reports the device that was on it.
+                {
+                    "portId": "2",
+                    "lastUpdatedAt": "2026-10-20T08:00:00Z",
+                    "lldp": [{"name": "System name", "value": "Old device"}],
                     "cdp": [],
                 },
             ],

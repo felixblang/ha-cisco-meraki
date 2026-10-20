@@ -7,10 +7,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.const import PERCENTAGE, UnitOfTime
-from homeassistant.core import CALLBACK_TYPE, callback
+from homeassistant.const import PERCENTAGE, UnitOfPower, UnitOfTime
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
-from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 from meraki import APIError
@@ -24,7 +22,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     LOGGER,
-    PORT_CHANGE_REFRESH_DELAYS,
+    PORT_ENERGY_INTERVAL,
     PORT_USAGE_MAX_BACKFILL,
     PORT_USAGE_MIN_SPAN,
     UPLINK_PRODUCT_TYPES,
@@ -52,6 +50,9 @@ if TYPE_CHECKING:
     from .sensor_coordinator import MerakiSensorCoordinator
 
 type MerakiConfigEntry = ConfigEntry[MerakiDataUpdateCoordinator]
+
+# An energy interval's Wh, divided by its length in hours, is its average power.
+WATT_HOURS_TO_WATTS = HOUR / SHORT_TERM
 
 
 @dataclass(slots=True)
@@ -87,7 +88,7 @@ class MerakiSwitchPort:
     neighbor: str | None = None
     # Physical connector, "RJ45" or "SFP".
     connector: str | None = None
-    # Names of wired clients seen on the port during the client look-back window.
+    # Names of the wired clients currently online on the port.
     clients: list[str] = field(default_factory=list)
     # PoE is enabled in the port's configuration.
     poe_enabled: bool = False
@@ -130,6 +131,8 @@ class MerakiData:
     ports: dict[str, dict[str, MerakiSwitchPort]] = field(default_factory=dict)
     # Appliance serial -> interface (e.g. "wan1") -> uplink.
     uplinks: dict[str, dict[str, MerakiUplink]] = field(default_factory=dict)
+    # Switch serial -> total PoE power (W) of the newest energy interval.
+    switch_poe_power: dict[str, float] = field(default_factory=dict)
     # (Appliance serial, interface) -> newest loss and latency measurement.
     uplink_quality: dict[tuple[str, str], MerakiUplinkQuality] = field(
         default_factory=dict
@@ -157,16 +160,25 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
         )
         self.client = client
         self.organization_id: str = config_entry.data[CONF_ORGANIZATION_ID]
-        self._port_refresh_unsubs: list[CALLBACK_TYPE] = []
         # Switch serial -> port ID -> connector. Hardware doesn't change, so each
         # switch is looked up once.
         self._port_connectors: dict[str, dict[str, str | None]] = {}
         # PoE energy statistics per switch port.
         self.port_energy = StatisticsWriter(hass)
+        self._port_energy_fetched_at: datetime | None = None
+        # (Switch serial, port ID) -> PoE power of the newest energy interval.
+        self._poe_power: dict[tuple[str, str], float] = {}
+        # Switch serial -> total PoE power of the newest energy interval.
+        self._switch_poe_power: dict[str, float] = {}
+        # PoE power per port and per switch, at the times the intervals were measured.
+        self.poe_power_stats = StatisticsWriter(hass)
+        # (Switch serial, port ID) -> last link status seen, and since when the
+        # current link has been up, to tell outdated LLDP/CDP neighbors.
+        self._link_status: dict[tuple[str, str], str | None] = {}
+        self._link_up_since: dict[tuple[str, str], datetime] = {}
         # Uplink loss and latency, measured every minute, at their own timestamps.
         self.uplink_stats = StatisticsWriter(hass)
         self._uplink_quality: dict[tuple[str, str], MerakiUplinkQuality] = {}
-        config_entry.async_on_unload(self._async_cancel_port_refreshes)
         # Polls MT sensor readings, if the organization has sensors.
         self.sensors: MerakiSensorCoordinator | None = None
 
@@ -279,7 +291,7 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
             LOGGER.debug("Could not fetch uplink loss and latency: %s", err)
         finally:
             data.uplink_quality = dict(self._uplink_quality)
-            self.uplink_stats.async_write(now)
+            await self.uplink_stats.async_refresh_and_write()
 
     async def _async_uplink_quality_since(
         self, data: MerakiData, end: datetime
@@ -426,6 +438,7 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
                 if port := ports.get(status.get("portId")):
                     port.is_uplink = bool(status.get("isUplink"))
                     port.status = status.get("status")
+                    self._track_link(switch["serial"], port)
                     port.speed = status.get("speed") or None
                     port.duplex = status.get("duplex") or None
                     port.poe_active = bool((status.get("poe") or {}).get("isAllocated"))
@@ -436,14 +449,51 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
                 continue
             for discovered in switch.get("ports", []):
                 if port := ports.get(discovered.get("portId")):
-                    port.neighbor = _neighbor_name(discovered)
+                    port.neighbor = self._current_neighbor(
+                        switch["serial"], port, discovered
+                    )
 
         await self._async_add_port_connectors(data)
         await self._async_add_port_energy(data)
 
+    def _track_link(self, serial: str, port: MerakiSwitchPort) -> None:
+        """Remember when a port's current link came up."""
+        key = (serial, port.port_id)
+        previous = self._link_status.get(key)
+        if port.status == "Connected" and previous not in (None, "Connected"):
+            self._link_up_since[key] = dt_util.utcnow()
+        self._link_status[key] = port.status
+
+    def _current_neighbor(
+        self, serial: str, port: MerakiSwitchPort, discovered: dict[str, Any]
+    ) -> str | None:
+        """Return the port's neighbor, unless it was seen before the current link."""
+        if port.status != "Connected":
+            return None
+        # Meraki keeps the last LLDP/CDP data of a port after the device is unplugged
+        # and only updates it when a neighbor announces itself again.
+        up_since = self._link_up_since.get((serial, port.port_id))
+        updated = dt_util.parse_datetime(discovered.get("lastUpdatedAt") or "")
+        if up_since is not None and (updated is None or updated < up_since):
+            return None
+        return _neighbor_name(discovered)
+
     async def _async_add_port_energy(self, data: MerakiData) -> None:
         """Add PoE energy statistics and the current PoE power of each port."""
         now = dt_util.utcnow()
+        fetched_at = self._port_energy_fetched_at
+        if fetched_at is None or now - fetched_at >= PORT_ENERGY_INTERVAL:
+            await self._async_fetch_port_energy(data, now)
+        for (serial, port_id), watts in self._poe_power.items():
+            if port := data.ports.get(serial, {}).get(port_id):
+                port.poe_power = watts
+        data.switch_poe_power = {
+            serial: watts
+            for serial, watts in self._switch_poe_power.items()
+            if serial in data.ports
+        }
+
+    async def _async_fetch_port_energy(self, data: MerakiData, now: datetime) -> None:
         since = await self._async_port_energy_since(data, now)
         get_usage = (
             self.client.switch.getOrganizationSwitchPortsUsageHistoryByDeviceByInterval
@@ -462,12 +512,15 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
                 raise
             LOGGER.debug("Could not fetch port energy usage: %s", err)
             return
+        self._port_energy_fetched_at = now
 
         for switch in _unwrap_items(usage):
             serial = switch.get("serial")
             ports = data.ports.get(serial)
             if not ports:
                 continue
+            # Interval start -> total PoE power (W) of the switch's PoE ports.
+            totals: dict[datetime, float] = {}
             for usage_port in switch.get("ports", []):
                 port = ports.get(usage_port.get("portId"))
                 if port is None:
@@ -486,13 +539,44 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
                 if (
                     stat.watermark is None
                     and not stat.hour_sum
+                    and not port.poe_active
                     and not any(wh for _, wh in intervals)
                 ):
                     continue
+                power_stat = await self._async_poe_power_statistic(
+                    data, serial, f"port_{port.port_id}_poe_power"
+                )
                 for ts, wh in intervals:
-                    stat.add(dt_util.as_utc(ts), wh)
-                port.poe_power = intervals[-1][1] * HOUR / SHORT_TERM
-        self.port_energy.async_write(now)
+                    utc = dt_util.as_utc(ts)
+                    # Rounded to the milliwatt, which is far below Meraki's 1.2 W steps.
+                    watts = round(wh * WATT_HOURS_TO_WATTS, 3)
+                    stat.add(utc, wh)
+                    power_stat.add(utc, watts)
+                    totals[utc] = round(totals.get(utc, 0.0) + watts, 3)
+                self._poe_power[(serial, port.port_id)] = round(
+                    intervals[-1][1] * WATT_HOURS_TO_WATTS, 3
+                )
+            if totals:
+                total_stat = await self._async_poe_power_statistic(
+                    data, serial, "poe_power"
+                )
+                for ts, watts in sorted(totals.items()):
+                    total_stat.add(ts, watts)
+                self._switch_poe_power[serial] = totals[max(totals)]
+        await self.port_energy.async_refresh_and_write()
+        await self.poe_power_stats.async_refresh_and_write()
+
+    async def _async_poe_power_statistic(
+        self, data: MerakiData, serial: str, key: str
+    ) -> MerakiStatistic:
+        """Return the PoE power statistic of a port or, for "poe_power", a switch."""
+        return await self.poe_power_stats.async_ensure(
+            statistic_id(serial, key),
+            f"{data.devices[serial].name} {key}",
+            UnitOfPower.WATT,
+            StatisticKind.MEAN,
+            entity_unique_id=f"{serial}_{key}",
+        )
 
     async def _async_port_energy_since(
         self, data: MerakiData, now: datetime
@@ -611,28 +695,10 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
             ) from err
 
         # The Dashboard accepts the change at once, but the switch only applies it on
-        # its next config sync, usually within a minute or two. Show the new setting
-        # now and poll again shortly so the link state follows as soon as it changes.
+        # its next config sync, usually within a minute or two; the link state
+        # follows on a later poll.
         self.data.ports[serial][port_id].enabled = enabled
         self.async_update_listeners()
-        self._async_schedule_port_refreshes()
-
-    @callback
-    def _async_schedule_port_refreshes(self) -> None:
-        self._async_cancel_port_refreshes()
-        self._port_refresh_unsubs = [
-            async_call_later(self.hass, delay, self._async_port_refresh)
-            for delay in PORT_CHANGE_REFRESH_DELAYS
-        ]
-
-    @callback
-    def _async_cancel_port_refreshes(self) -> None:
-        for unsub in self._port_refresh_unsubs:
-            unsub()
-        self._port_refresh_unsubs = []
-
-    async def _async_port_refresh(self, _now: datetime) -> None:
-        await self.async_request_refresh()
 
     async def _async_fetch_network_clients(
         self, network_id: str
@@ -673,6 +739,9 @@ def _add_port_clients(
     """Attach the wired clients each switch port has seen."""
     for clients in client_lists:
         for client in clients:
+            # Clients seen earlier in the look-back window may have been unplugged.
+            if client.get("status") != "Online":
+                continue
             ports = data.ports.get(client.get("recentDeviceSerial"))
             port_id = client.get("switchport")
             if not ports or not port_id or port_id not in ports:
