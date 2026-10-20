@@ -270,6 +270,9 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
             await self._async_fetch_uplinks(data)
             await self._async_fetch_uplink_quality(data)
 
+        if self.camera_sense:
+            await self.camera_sense.async_poll(self.client)
+
         return data
 
     async def _async_fetch_uplink_quality(self, data: MerakiData) -> None:

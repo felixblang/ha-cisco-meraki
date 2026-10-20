@@ -172,8 +172,12 @@ the same broker, each camera gets:
 
 The sensors appear as soon as a camera publishes the value. Cameras publish within a
 few seconds and repeat their counts several times a second; only changes are written,
-and Home Assistant compiles the statistics as for any other sensor. There is no
-fallback through the Dashboard API: without MQTT, cameras have no MV Sense sensors.
+and Home Assistant compiles the statistics as for any other sensor.
+
+Cameras that have not published over MQTT for 2 minutes, or whose broker Home
+Assistant cannot reach, are polled through the Dashboard API every minute instead.
+The API only provides people counts: each zone's average over the last minute, rounded
+to whole people. Vehicle counts, illuminance and audio level need MQTT.
 
 ## Trademarks
 

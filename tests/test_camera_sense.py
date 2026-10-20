@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+from unittest.mock import MagicMock
+
 import pytest
 from freezegun.api import FrozenDateTimeFactory
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_mqtt_message,
+    async_fire_time_changed,
 )
 
 from custom_components.cisco_meraki.camera_sense import (
@@ -16,7 +21,11 @@ from custom_components.cisco_meraki.camera_sense import (
     LIGHT,
     SenseValue,
     parse_message,
+    parse_recent,
 )
+from custom_components.cisco_meraki.const import DEFAULT_SCAN_INTERVAL
+
+from .conftest import make_api_error
 
 CAMERA = "Q2BB-BBBB-BBBB"
 PREFIX = f"/merakimv/{CAMERA}"
@@ -151,3 +160,68 @@ async def test_unknown_cameras_are_ignored(
     )
     await hass.async_block_till_done()
     assert not [s for s in hass.states.async_all() if "full_frame" in s.entity_id]
+
+
+# As getDeviceCameraAnalyticsRecent returns it: the last minute of each zone.
+RECENT = [
+    {
+        "zoneId": 0,
+        "startTs": "2026-10-20T20:05:45.082Z",
+        "endTs": "2026-10-20T20:06:45.082Z",
+        "entrances": 1,
+        "averageCount": 1.5,
+    },
+    {"zoneId": int(ENTRANCE), "error": "No updates in past 30 minutes"},
+]
+
+
+def test_parse_recent() -> None:
+    """Zones without recent detections are skipped."""
+    assert parse_recent(CAMERA, RECENT) == [
+        SenseValue(CAMERA, "zone_0_person", 2, "0", "person")
+    ]
+    assert parse_recent(CAMERA, {"error": "Could not communicate with camera"}) == []
+
+
+@pytest.mark.usefixtures("mqtt_mock")
+async def test_api_fallback(
+    hass: HomeAssistant,
+    mock_client: MagicMock,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Cameras that do not publish over MQTT are polled through the API."""
+    get_recent = mock_client.camera.getDeviceCameraAnalyticsRecent
+    get_recent.return_value = RECENT
+    await _setup(hass, mock_config_entry)
+    # The minute's average of 1.5 people, in whole people.
+    assert hass.states.get(FULL_FRAME_PEOPLE).state == "2"
+
+    # Once the camera publishes over MQTT, the API is no longer polled for it.
+    async_fire_mqtt_message(hass, f"{PREFIX}/0", '{"ts":1, "counts":{"person":3}}')
+    await hass.async_block_till_done()
+    assert hass.states.get(FULL_FRAME_PEOPLE).state == "3"
+    get_recent.reset_mock()
+    freezer.tick(DEFAULT_SCAN_INTERVAL + timedelta(seconds=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    get_recent.assert_not_awaited()
+
+    # After two quiet minutes on MQTT, the API takes over again.
+    for _ in range(2):
+        freezer.tick(DEFAULT_SCAN_INTERVAL + timedelta(seconds=1))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done(wait_background_tasks=True)
+    get_recent.assert_awaited()
+    assert hass.states.get(FULL_FRAME_PEOPLE).state == "2"
+
+
+@pytest.mark.usefixtures("mqtt_mock", "freezer")
+async def test_api_fallback_error_is_not_fatal(
+    hass: HomeAssistant, mock_client: MagicMock, mock_config_entry: MockConfigEntry
+) -> None:
+    """A camera the API cannot reach does not stop the other data."""
+    mock_client.camera.getDeviceCameraAnalyticsRecent.side_effect = make_api_error(400)
+    await _setup(hass, mock_config_entry)
+    assert mock_config_entry.state is ConfigEntryState.LOADED
+    assert hass.states.get(FULL_FRAME_PEOPLE) is None

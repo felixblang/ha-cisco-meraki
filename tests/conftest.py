@@ -367,6 +367,8 @@ def mock_client() -> Generator[MagicMock]:
     client.camera.getDeviceCameraAnalyticsZones = AsyncMock(
         return_value=deepcopy(CAMERA_ZONES)
     )
+    # No analytics through the API unless a test sets them.
+    client.camera.getDeviceCameraAnalyticsRecent = AsyncMock(return_value=[])
     with patch(
         "custom_components.cisco_meraki.api.AsyncDashboardAPI", return_value=client
     ):

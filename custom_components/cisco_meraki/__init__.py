@@ -61,8 +61,10 @@ async def _async_start_camera_sense(
     client: AsyncDashboardAPI,
     sense: camera_sense.MerakiCameraSense,
 ) -> None:
-    """Name the cameras' zones, then take their MV Sense data from MQTT."""
+    """Name the cameras' zones, poll them once, then follow MQTT."""
     await sense.async_load_zone_names(client)
+    # Without this, cameras that only the API reaches would wait for the next poll.
+    await sense.async_poll(client)
     if unsubscribe := await camera_sense.async_subscribe(hass, sense):
         entry.async_on_unload(unsubscribe)
 

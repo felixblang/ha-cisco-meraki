@@ -1,17 +1,22 @@
 """
-Meraki MV Sense: object counts, light and audio level that cameras publish to MQTT.
+Meraki MV Sense: object counts, light and audio level of MV cameras.
 
-Unlike MT sensors, MV cameras publish in real time (within a few seconds), so their
-values are plain sensor states and Home Assistant compiles their statistics itself.
+Cameras publish these to MQTT in real time (within a few seconds), so their values are
+plain sensor states and Home Assistant compiles their statistics itself. Cameras that
+do not publish over MQTT are polled through the Dashboard API instead, which only
+provides each zone's average people count of the last minute.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.util import dt as dt_util
 from meraki import APIError
 
 from .const import LOGGER
@@ -27,6 +32,10 @@ MQTT_TOPIC = "/merakimv/+/+"
 
 # Object types a zone counts; MV2 and other indoor cameras only count people.
 OBJECT_TYPES = ("person", "vehicle")
+
+# Cameras publish counts several times a second; one that has been quiet on MQTT for
+# this long is polled through the API.
+MQTT_FRESH = timedelta(minutes=2)
 
 LIGHT = "light"
 AUDIO_LEVEL = "audio_level"
@@ -88,6 +97,31 @@ def parse_message(topic: str, payload: Any) -> list[SenseValue]:
     ]
 
 
+def parse_recent(serial: str, zones: Any) -> list[SenseValue]:
+    """
+    Return the people counts in a getDeviceCameraAnalyticsRecent response.
+
+    The API reports each zone's average count over the last minute; it is rounded
+    to whole people, like the counts cameras publish over MQTT.
+    """
+    if not isinstance(zones, list):
+        return []
+    # Zones without detections in the last 30 minutes have an "error" instead.
+    return [
+        SenseValue(
+            serial,
+            f"zone_{zone['zoneId']}_person",
+            math.floor(zone["averageCount"] + 0.5),
+            zone_id=str(zone["zoneId"]),
+            object_type="person",
+        )
+        for zone in zones
+        if isinstance(zone, dict)
+        and zone.get("zoneId") is not None
+        and _is_number(zone.get("averageCount"))
+    ]
+
+
 def _is_number(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
 
@@ -103,6 +137,30 @@ class MerakiCameraSense:
         self.values: dict[tuple[str, str], SenseValue] = {}
         self._new_value_listeners: list[Callable[[SenseValue], None]] = []
         self._update_listeners: dict[tuple[str, str], list[Callable[[], None]]] = {}
+        # Camera serial -> when it last published over MQTT.
+        self._mqtt_seen: dict[str, datetime] = {}
+
+    async def async_poll(self, client: AsyncDashboardAPI) -> None:
+        """Poll the cameras that are not publishing over MQTT."""
+        now = dt_util.utcnow()
+        for serial in sorted(self.serials):
+            seen = self._mqtt_seen.get(serial)
+            if seen is not None and now - seen < MQTT_FRESH:
+                continue
+            try:
+                zones = await client.camera.getDeviceCameraAnalyticsRecent(serial)
+            except APIError as err:
+                LOGGER.debug("Could not fetch analytics of %s: %s", serial, err)
+                continue
+            for value in parse_recent(serial, zones):
+                self.async_set(value)
+
+    @callback
+    def async_mqtt_received(self, value: SenseValue) -> None:
+        """Store a value received over MQTT."""
+        if value.serial in self.serials:
+            self._mqtt_seen[value.serial] = dt_util.utcnow()
+        self.async_set(value)
 
     async def async_load_zone_names(self, client: AsyncDashboardAPI) -> None:
         """Look up the names of the cameras' analytics zones."""
@@ -173,7 +231,7 @@ async def async_subscribe(
     @callback
     def _async_message(msg: ReceiveMessage) -> None:
         for value in parse_message(msg.topic, msg.payload):
-            sense.async_set(value)
+            sense.async_mqtt_received(value)
 
     unsubscribe = await mqtt.async_subscribe(hass, MQTT_TOPIC, _async_message)
     LOGGER.debug("Receiving MV Sense data from MQTT topic %s", MQTT_TOPIC)
