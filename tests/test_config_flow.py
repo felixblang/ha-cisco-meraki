@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -11,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.cisco_meraki.api import CALLER
 from custom_components.cisco_meraki.const import (
     CONF_NETWORKS,
     CONF_ORGANIZATION_ID,
@@ -200,3 +203,14 @@ async def test_options_flow(
     # Both test devices are in NETWORK_ID, so the filter leaves nothing.
     assert NETWORK_ID not in mock_config_entry.options[CONF_NETWORKS]
     assert hass.states.get("sensor.office_ap_status").state == "unavailable"
+
+
+def test_caller_version_matches_manifest() -> None:
+    """The version reported to Meraki is the integration's version."""
+    manifest = json.loads(
+        (
+            Path(__file__).parent.parent
+            / "custom_components/cisco_meraki/manifest.json"
+        ).read_text()
+    )
+    assert CALLER.split()[0].split("/")[1] == manifest["version"]
