@@ -5,9 +5,10 @@
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories)
 
 A Home Assistant custom integration for [Cisco Meraki](https://meraki.cisco.com/)
-organizations: device status and clients, switch ports you can turn on and off with
-their PoE power and energy, and MT sensors whose readings are recorded at the time
-they were measured, from the Meraki Dashboard API or locally over MQTT.
+organizations: device status, clients and their presence, switch ports you can turn
+on and off with their PoE power and energy, and MT sensors whose readings are
+recorded at the time they were measured, from the Meraki Dashboard API or locally
+over MQTT.
 
 > [!NOTE]
 > This is unrelated to the built-in [Meraki](https://www.home-assistant.io/integrations/meraki/)
@@ -100,6 +101,21 @@ intervals or arrive in 20-minute batches.
 When you turn a port on or off in Home Assistant, the switch shows the new setting
 right away. The Meraki switch itself applies the change on its next sync with the
 Dashboard, usually within a minute or two, and the link sensor follows on a later poll.
+
+### Client presence
+
+Every Wi-Fi or wired client seen in the organization's networks (or the networks you
+select) in the last hour gets a **device tracker**. It is home while Meraki reports
+the client online, and shows its IP address, MAC address and hostname. Like other
+network-based trackers, new trackers are disabled until you enable them, unless
+another integration already knows the device by its MAC address; the tracker is then
+added to that device.
+
+A client that connects shows as home within about a minute. Meraki only marks a client
+offline after about five minutes without traffic, so a phone that leaves shows as away
+about five to six minutes later. The trackers use the client data that is fetched for
+the client counts anyway, so they need no extra requests. Bluetooth devices are not
+tracked.
 
 ### MT sensors
 

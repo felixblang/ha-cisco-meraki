@@ -325,6 +325,22 @@ def auto_enable_custom_integrations(
 
 
 @pytest.fixture
+def entity_registry_enabled_by_default() -> Generator[None]:
+    """Enable all entities in the registry, as Home Assistant core's fixture does."""
+    with (
+        patch(
+            "homeassistant.helpers.entity.Entity.entity_registry_enabled_default",
+            return_value=True,
+        ),
+        patch(
+            "homeassistant.components.device_tracker.entity.ScannerEntity.entity_registry_enabled_default",
+            return_value=True,
+        ),
+    ):
+        yield
+
+
+@pytest.fixture
 def mock_client() -> Generator[MagicMock]:
     """Patch the Meraki SDK client."""
     client = MagicMock()

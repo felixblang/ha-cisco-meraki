@@ -75,6 +75,18 @@ class MerakiDevice:
     client_count: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class MerakiClient:
+    """A Wi-Fi or wired client of a Meraki network."""
+
+    mac: str
+    network_id: str
+    description: str | None
+    ip: str | None
+    online: bool
+    last_seen: datetime | None
+
+
 @dataclass(slots=True)
 class MerakiSwitchPort:
     """A switch port's configuration and link state."""
@@ -131,6 +143,8 @@ class MerakiData:
     """Everything fetched for one organization in a single update."""
 
     devices: dict[str, MerakiDevice] = field(default_factory=dict)
+    # Clients seen in the last hour, by MAC address.
+    clients: dict[str, MerakiClient] = field(default_factory=dict)
     # Switch serial -> port ID -> port.
     ports: dict[str, dict[str, MerakiSwitchPort]] = field(default_factory=dict)
     # Appliance serial -> interface (e.g. "wan1") -> uplink.
@@ -244,14 +258,24 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
             )
 
         # Only networks that contain a client-serving device need a client query.
-        network_ids = {
-            d.network_id
-            for d in data.devices.values()
-            if d.network_id and d.product_type in CLIENT_PRODUCT_TYPES
-        }
-        client_lists = await asyncio.gather(
-            *(self._async_fetch_network_clients(nid) for nid in network_ids)
+        network_ids = sorted(
+            {
+                d.network_id
+                for d in data.devices.values()
+                if d.network_id and d.product_type in CLIENT_PRODUCT_TYPES
+            }
         )
+        # Let every request finish before raising, as they share the client.
+        results = await asyncio.gather(
+            *(self._async_fetch_network_clients(nid) for nid in network_ids),
+            return_exceptions=True,
+        )
+        client_lists: list[list[dict[str, Any]]] = []
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+            client_lists.append(result)
+        data.clients = _merge_clients(network_ids, client_lists)
         counts: Counter[str] = Counter(
             client["recentDeviceSerial"]
             for clients in client_lists
@@ -746,6 +770,47 @@ def _neighbor_name(discovered: dict[str, Any]) -> str | None:
         or lldp.get("Chassis ID")
         or cdp.get("Platform")
     )
+
+
+def _merge_clients(
+    network_ids: list[str], client_lists: list[list[dict[str, Any]]]
+) -> dict[str, MerakiClient]:
+    """Return the clients of all networks by MAC address."""
+    clients: dict[str, MerakiClient] = {}
+    for network_id, items in zip(network_ids, client_lists, strict=True):
+        for item in items:
+            if not (mac := item.get("mac")):
+                continue
+            client = MerakiClient(
+                mac=mac,
+                network_id=network_id,
+                description=item.get("description"),
+                ip=item.get("ip"),
+                online=item.get("status") == "Online",
+                last_seen=_parse_last_seen(item.get("lastSeen")),
+            )
+            # A client that moved between networks is listed in both.
+            if (known := clients.get(mac)) is None or _is_more_recent(client, known):
+                clients[mac] = client
+    return clients
+
+
+def _parse_last_seen(value: Any) -> datetime | None:
+    # Meraki documents lastSeen as a Unix timestamp, but the API returned ISO
+    # strings for every client during testing; both are accepted.
+    if isinstance(value, int | float):
+        return dt_util.utc_from_timestamp(value)
+    if isinstance(value, str):
+        return dt_util.parse_datetime(value)
+    return None
+
+
+def _is_more_recent(client: MerakiClient, other: MerakiClient) -> bool:
+    """Return True if client is the more recent sighting of the same MAC."""
+    if client.online != other.online:
+        return client.online
+    epoch = dt_util.utc_from_timestamp(0)
+    return (client.last_seen or epoch) > (other.last_seen or epoch)
 
 
 def _add_port_clients(

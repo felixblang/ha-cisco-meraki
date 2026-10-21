@@ -15,7 +15,12 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from meraki.aio import AsyncDashboardAPI
 
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR, Platform.SWITCH]
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
+    Platform.DEVICE_TRACKER,
+    Platform.SENSOR,
+    Platform.SWITCH,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: MerakiConfigEntry) -> bool:
