@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from meraki import APIError
 
 # Meraki asks API callers to identify as "<Application>/<version> <vendor>".
-CALLER = "HomeAssistantMeraki/0.5.0 felixblang"
+CALLER = "HomeAssistantMeraki/0.6.0 felixblang"
 
 
 async def async_create_client(hass: HomeAssistant, api_key: str) -> AsyncDashboardAPI:
