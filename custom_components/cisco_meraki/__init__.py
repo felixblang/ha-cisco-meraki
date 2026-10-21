@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from homeassistant.const import CONF_API_KEY, Platform
+from homeassistant.const import CONF_API_KEY, EVENT_HOMEASSISTANT_STOP, Platform
 
 from . import camera_sense, mqtt_source
 from .api import async_close_client, async_create_client
@@ -12,7 +12,7 @@ from .coordinator import MerakiConfigEntry, MerakiDataUpdateCoordinator
 from .sensor_coordinator import MerakiSensorCoordinator
 
 if TYPE_CHECKING:
-    from homeassistant.core import HomeAssistant
+    from homeassistant.core import Event, HomeAssistant
     from meraki.aio import AsyncDashboardAPI
 
 PLATFORMS: list[Platform] = [
@@ -27,6 +27,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: MerakiConfigEntry) -> bo
     """Set up Cisco Meraki from a config entry."""
     client = await async_create_client(hass, entry.data[CONF_API_KEY])
     entry.async_on_unload(lambda: async_close_client(client))
+
+    # Config entries are not unloaded when Home Assistant stops.
+    async def _async_close(_: Event) -> None:
+        await async_close_client(client)
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_close)
+    )
 
     coordinator = MerakiDataUpdateCoordinator(hass, entry, client)
     await coordinator.async_config_entry_first_refresh()

@@ -41,6 +41,7 @@ from .stats import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
     from datetime import datetime
 
     from homeassistant.config_entries import ConfigEntry
@@ -225,7 +226,7 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
 
     async def _async_fetch(self) -> MerakiData:
         org_api = self.client.organizations
-        devices, availabilities = await asyncio.gather(
+        devices, availabilities = await _gather(
             org_api.getOrganizationDevices(self.organization_id, total_pages="all"),
             org_api.getOrganizationDevicesAvailabilities(
                 self.organization_id, total_pages="all"
@@ -265,16 +266,9 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
                 if d.network_id and d.product_type in CLIENT_PRODUCT_TYPES
             }
         )
-        # Let every request finish before raising, as they share the client.
-        results = await asyncio.gather(
-            *(self._async_fetch_network_clients(nid) for nid in network_ids),
-            return_exceptions=True,
+        client_lists = await _gather(
+            *(self._async_fetch_network_clients(nid) for nid in network_ids)
         )
-        client_lists: list[list[dict[str, Any]]] = []
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
-            client_lists.append(result)
         data.clients = _merge_clients(network_ids, client_lists)
         counts: Counter[str] = Counter(
             client["recentDeviceSerial"]
@@ -437,7 +431,7 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
     async def _async_fetch_switch_ports(self, data: MerakiData) -> None:
         """Add port configuration, link status and neighbors for every switch."""
         switch_api = self.client.switch
-        configs, statuses, topology = await asyncio.gather(
+        configs, statuses, topology = await _gather(
             switch_api.getOrganizationSwitchPortsBySwitch(
                 self.organization_id, total_pages="all", perPage=50
             ),
@@ -748,6 +742,18 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
             perPage=5000,
             timespan=CLIENT_TIMESPAN_SECONDS,
         )
+
+
+async def _gather[T](*requests: Awaitable[T]) -> list[T]:
+    """Await requests concurrently, raising the first error once all are done."""
+    # Requests still running when one fails would outlive the client if the entry
+    # is cleaned up because of that error.
+    values: list[T] = []
+    for result in await asyncio.gather(*requests, return_exceptions=True):
+        if isinstance(result, BaseException):
+            raise result
+        values.append(result)
+    return values
 
 
 def _unwrap_items(response: Any) -> list[dict[str, Any]]:

@@ -228,7 +228,9 @@ Home Assistant configuration and restart Home Assistant.
 
 To change the networks later, open the integration's **Configure** dialog.
 
-If the API key is revoked, Home Assistant asks you to reauthenticate with a new one.
+If the API key is revoked, or its administrator loses access to the organization,
+Home Assistant asks you to reauthenticate. Enter a key of an administrator who has
+access to the organization, or restore the administrator's access first.
 
 ## API usage
 

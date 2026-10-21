@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from datetime import timedelta
+from typing import Any
 from unittest.mock import MagicMock
 
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.util import dt as dt_util
@@ -116,6 +119,45 @@ async def test_unload(
     await hass.async_block_till_done()
     assert mock_config_entry.state is ConfigEntryState.NOT_LOADED
     mock_client.__aexit__.assert_awaited()
+
+
+async def test_client_closed_on_stop(
+    hass: HomeAssistant, mock_client: MagicMock, mock_config_entry: MockConfigEntry
+) -> None:
+    """Home Assistant stopping closes the API client."""
+    await _setup(hass, mock_config_entry)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+    mock_client.__aexit__.assert_awaited_once()
+
+
+async def test_all_requests_finish_before_failing(
+    hass: HomeAssistant, mock_client: MagicMock, mock_config_entry: MockConfigEntry
+) -> None:
+    """The client is only closed once every request of a failed update finished."""
+    devices_running = False
+
+    async def _get_devices(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        nonlocal devices_running
+        devices_running = True
+        # Slower than the error takes to reach config entry setup.
+        for _ in range(100):
+            await asyncio.sleep(0)
+        devices_running = False
+        return [dict(d) for d in DEVICES]
+
+    mock_client.organizations.getOrganizationDevices.side_effect = _get_devices
+    mock_client.organizations.getOrganizationDevicesAvailabilities.side_effect = (
+        make_api_error(503)
+    )
+    running_when_closed: list[bool] = []
+    mock_client.__aexit__.side_effect = lambda *_: running_when_closed.append(
+        devices_running
+    )
+    await _setup(hass, mock_config_entry)
+
+    assert mock_config_entry.state is ConfigEntryState.SETUP_RETRY
+    assert running_when_closed == [False]
 
 
 async def test_uplinks(
