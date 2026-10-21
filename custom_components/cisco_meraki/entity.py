@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from homeassistant.core import callback
-from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo
+from homeassistant.helpers.device_registry import (
+    CONNECTION_NETWORK_MAC,
+    DeviceEntryType,
+    DeviceInfo,
+)
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
@@ -17,7 +21,12 @@ if TYPE_CHECKING:
     from homeassistant.helpers.entity import Entity
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-    from .coordinator import MerakiConfigEntry, MerakiDevice, MerakiSwitchPort
+    from .coordinator import (
+        MerakiConfigEntry,
+        MerakiDevice,
+        MerakiSsid,
+        MerakiSwitchPort,
+    )
 
 
 class MerakiEntity(CoordinatorEntity[MerakiDataUpdateCoordinator]):
@@ -112,3 +121,82 @@ def async_setup_port_entities(
 
     _async_add_new_ports()
     entry.async_on_unload(coordinator.async_add_listener(_async_add_new_ports))
+
+
+class MerakiSsidEntity(CoordinatorEntity[MerakiDataUpdateCoordinator]):
+    """An entity for one SSID, on a device for its network's Wi-Fi."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: MerakiDataUpdateCoordinator,
+        network_id: str,
+        number: int,
+        key: str,
+    ) -> None:
+        """Initialize the entity."""
+        super().__init__(coordinator)
+        self._ssid_key = (network_id, number)
+        # By slot number, so renaming the SSID in the Dashboard keeps the entity.
+        self._attr_unique_id = f"{network_id}_ssid_{number}_{key}"
+        network = coordinator.networks.get(network_id)
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"{network_id}_wireless")},
+            entry_type=DeviceEntryType.SERVICE,
+            manufacturer=MANUFACTURER,
+            model="Wireless network",
+            name=f"{network.name if network else network_id} Wi-Fi",
+        )
+        self._attr_translation_placeholders = {"ssid": self.ssid.name}
+
+    @property
+    def ssid(self) -> MerakiSsid:
+        """Return the latest data for this entity's SSID."""
+        return self.coordinator.data.ssids[self._ssid_key]
+
+    @property
+    def available(self) -> bool:
+        """Return False if the SSID was reset to unconfigured."""
+        return super().available and self._ssid_key in self.coordinator.data.ssids
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        if (
+            self._ssid_key in self.coordinator.data.ssids
+            and self._attr_translation_placeholders["ssid"] != self.ssid.name
+        ):
+            self._attr_translation_placeholders = {"ssid": self.ssid.name}
+            # The cached name is built from the placeholders, but changing them does
+            # not clear it; this is how Home Assistant clears it for _attr_name.
+            self.__dict__.pop("name", None)
+        super()._handle_coordinator_update()
+
+
+@callback
+def async_setup_ssid_entities(
+    entry: MerakiConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+    entity_factory: Callable[[MerakiDataUpdateCoordinator, str, int], Entity],
+    supported: Callable[[MerakiDataUpdateCoordinator, str], bool] | None = None,
+) -> None:
+    """Add an entity per configured SSID now and for SSIDs configured later."""
+    coordinator = entry.runtime_data
+    known: set[tuple[str, int]] = set()
+
+    @callback
+    def _async_add_new_ssids() -> None:
+        current = {
+            key
+            for key in coordinator.data.ssids
+            if supported is None or supported(coordinator, key[0])
+        }
+        if new := current - known:
+            known.update(new)
+            async_add_entities(
+                entity_factory(coordinator, network_id, number)
+                for network_id, number in sorted(new)
+            )
+
+    _async_add_new_ssids()
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_new_ssids))

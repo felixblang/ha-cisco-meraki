@@ -236,6 +236,51 @@ CLIENTS = [
 ]
 
 
+ADMIN_EMAIL = "admin@example.com"
+
+# The organization's admin list; the API key belongs to the first administrator.
+ADMINS = [
+    {
+        "email": ADMIN_EMAIL,
+        "name": "Admin",
+        "orgAccess": "full",
+        "networks": [],
+        "tags": [],
+    },
+]
+
+# As getNetworkWirelessSsids returns them: all 15 slots, most of them unconfigured.
+SSIDS = [
+    {
+        "number": 0,
+        "name": "Home",
+        "enabled": True,
+        "authMode": "psk",
+        "visible": True,
+        "availableOnAllAps": True,
+    },
+    {
+        "number": 1,
+        "name": "Guests",
+        "enabled": False,
+        "authMode": "psk",
+        "visible": True,
+        "availableOnAllAps": True,
+    },
+    *(
+        {
+            "number": number,
+            "name": f"Unconfigured SSID {number + 1}",
+            "enabled": False,
+            "authMode": "open",
+            "visible": True,
+            "availableOnAllAps": True,
+        }
+        for number in range(2, 15)
+    ),
+]
+
+
 def _usage(start: datetime, wh: float | None) -> dict[str, Any]:
     end = start + timedelta(minutes=5)
     return {
@@ -358,6 +403,17 @@ def mock_client() -> Generator[MagicMock]:
         return_value=list(AVAILABILITIES)
     )
     client.networks.getNetworkClients = AsyncMock(return_value=list(CLIENTS))
+    client.administered.getAdministeredIdentitiesMe = AsyncMock(
+        return_value={"email": ADMIN_EMAIL, "name": "Admin"}
+    )
+    client.organizations.getOrganizationAdmins = AsyncMock(
+        return_value=deepcopy(ADMINS)
+    )
+    client.wireless.getNetworkWirelessSsids = AsyncMock(
+        side_effect=lambda _: deepcopy(SSIDS)
+    )
+    client.wireless.updateNetworkWirelessSsid = AsyncMock(return_value={})
+    client.devices.updateDevice = AsyncMock(return_value={})
     client.organizations.getOrganizationUplinksStatuses = AsyncMock(
         return_value=deepcopy(UPLINK_STATUSES)
     )

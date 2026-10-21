@@ -86,6 +86,12 @@
       },
       "audio_level": {
         "default": "mdi:microphone"
+      },
+      "ssid_clients": {
+        "default": "mdi:devices"
+      },
+      "tags": {
+        "default": "mdi:tag-multiple"
       }
     },
     "switch": {
@@ -93,6 +99,18 @@
         "default": "mdi:ethernet",
         "state": {
           "off": "mdi:ethernet-off"
+        }
+      },
+      "ssid": {
+        "default": "mdi:wifi",
+        "state": {
+          "off": "mdi:wifi-off"
+        }
+      },
+      "tag": {
+        "default": "mdi:tag",
+        "state": {
+          "off": "mdi:tag-off"
         }
       }
     }

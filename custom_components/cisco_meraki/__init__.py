@@ -38,6 +38,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MerakiConfigEntry) -> bo
 
     coordinator = MerakiDataUpdateCoordinator(hass, entry, client)
     await coordinator.async_config_entry_first_refresh()
+    # Checked at every setup, so a changed administrator access applies on reload.
+    await coordinator.async_load_write_access()
     entry.runtime_data = coordinator
     if coordinator.sensors_present:
         coordinator.sensors = MerakiSensorCoordinator(hass, entry, client, coordinator)

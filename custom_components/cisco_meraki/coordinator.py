@@ -74,6 +74,7 @@ class MerakiDevice:
     url: str | None
     status: str | None
     client_count: int = 0
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +87,32 @@ class MerakiClient:
     ip: str | None
     online: bool
     last_seen: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class MerakiNetwork:
+    """A network of the organization."""
+
+    network_id: str
+    name: str
+    tags: frozenset[str] = frozenset()
+
+
+@dataclass(slots=True)
+class MerakiSsid:
+    """A configured SSID of a wireless network."""
+
+    network_id: str
+    number: int
+    name: str
+    enabled: bool
+    auth_mode: str | None = None
+    visible: bool | None = None
+    available_on_all_aps: bool | None = None
+    # With available_on_all_aps off, only access points with one of these tags
+    # broadcast the SSID.
+    availability_tags: tuple[str, ...] = ()
+    client_count: int = 0
 
 
 @dataclass(slots=True)
@@ -146,6 +173,8 @@ class MerakiData:
     devices: dict[str, MerakiDevice] = field(default_factory=dict)
     # Clients seen in the last hour, by MAC address.
     clients: dict[str, MerakiClient] = field(default_factory=dict)
+    # (Network ID, SSID number) -> configured SSID.
+    ssids: dict[tuple[str, int], MerakiSsid] = field(default_factory=dict)
     # Switch serial -> port ID -> port.
     ports: dict[str, dict[str, MerakiSwitchPort]] = field(default_factory=dict)
     # Appliance serial -> interface (e.g. "wan1") -> uplink.
@@ -202,6 +231,11 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
         self.sensors: MerakiSensorCoordinator | None = None
         # MV Sense data of the organization's cameras, received over MQTT.
         self.camera_sense: MerakiCameraSense | None = None
+        # Network ID -> network; looked up again when a device is in a new network.
+        self.networks: dict[str, MerakiNetwork] = {}
+        # Whether the API key may change everything, or else the networks it may.
+        self._full_write_access = False
+        self._writable_networks: set[str] = set()
 
     @property
     def sensors_present(self) -> bool:
@@ -256,6 +290,7 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
                 network_id=device.get("networkId"),
                 url=device.get("url"),
                 status=status_by_serial.get(serial),
+                tags=tuple(device.get("tags") or ()),
             )
 
         # Only networks that contain a client-serving device need a client query.
@@ -270,6 +305,20 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
             *(self._async_fetch_network_clients(nid) for nid in network_ids)
         )
         data.clients = _merge_clients(network_ids, client_lists)
+
+        device_networks = {d.network_id for d in data.devices.values() if d.network_id}
+        if not device_networks <= self.networks.keys():
+            await self._async_fetch_networks()
+        wireless_networks = sorted(
+            {
+                d.network_id
+                for d in data.devices.values()
+                if d.network_id and d.product_type == "wireless"
+            }
+        )
+        if wireless_networks:
+            clients_by_network = dict(zip(network_ids, client_lists, strict=True))
+            await self._async_fetch_ssids(data, wireless_networks, clients_by_network)
         counts: Counter[str] = Counter(
             client["recentDeviceSerial"]
             for clients in client_lists
@@ -706,6 +755,176 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
             LOGGER.debug("Could not fetch LLDP/CDP neighbors: %s", err)
             return []
         return _unwrap_items(topology)
+
+    async def _async_fetch_networks(self) -> None:
+        networks = await self.client.organizations.getOrganizationNetworks(
+            self.organization_id, total_pages="all"
+        )
+        self.networks = {
+            network["id"]: MerakiNetwork(
+                network_id=network["id"],
+                name=network.get("name") or network["id"],
+                tags=frozenset(network.get("tags") or []),
+            )
+            for network in networks
+        }
+
+    async def _async_fetch_ssids(
+        self,
+        data: MerakiData,
+        network_ids: list[str],
+        clients_by_network: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        """Add the configured SSIDs of each wireless network and their clients."""
+        ssid_lists = await _gather(
+            *(self.client.wireless.getNetworkWirelessSsids(nid) for nid in network_ids)
+        )
+        for network_id, ssids in zip(network_ids, ssid_lists, strict=True):
+            online = Counter(
+                client["ssid"]
+                for client in clients_by_network.get(network_id, [])
+                if client.get("status") == "Online" and client.get("ssid")
+            )
+            for ssid in ssids:
+                number = ssid["number"]
+                name = ssid.get("name") or ""
+                enabled = bool(ssid.get("enabled"))
+                # Every network has 15 SSID slots; unused ones keep this name.
+                if not enabled and name == f"Unconfigured SSID {number + 1}":
+                    continue
+                data.ssids[(network_id, number)] = MerakiSsid(
+                    network_id=network_id,
+                    number=number,
+                    name=name,
+                    enabled=enabled,
+                    auth_mode=ssid.get("authMode"),
+                    visible=ssid.get("visible"),
+                    available_on_all_aps=ssid.get("availableOnAllAps"),
+                    availability_tags=tuple(ssid.get("availabilityTags") or ()),
+                    client_count=online[name],
+                )
+
+    async def async_load_write_access(self) -> None:
+        """
+        Find out which networks the API key may change.
+
+        API keys act with the rights of their administrator, which the organization's
+        admin list shows: full or read-only access to the whole organization, or
+        access to single networks, directly or through network tags.
+        """
+        try:
+            me = await self.client.administered.getAdministeredIdentitiesMe()
+            admins = await self.client.organizations.getOrganizationAdmins(
+                self.organization_id
+            )
+        except APIError as err:
+            # Read-only administrators may not see the admin list.
+            LOGGER.debug("Treating the API key as read-only: %s", err)
+            return
+        email = (me.get("email") or "").lower()
+        admin = next(
+            (a for a in admins if (a.get("email") or "").lower() == email), None
+        )
+        if admin is None:
+            LOGGER.debug("The API key's administrator is not in the admin list")
+            return
+        if admin.get("orgAccess") == "full":
+            self._full_write_access = True
+            return
+        self._writable_networks = {
+            network["id"]
+            for network in admin.get("networks") or []
+            if network.get("access") == "full"
+        }
+        full_tags = {
+            tag["tag"] for tag in admin.get("tags") or [] if tag.get("access") == "full"
+        }
+        self._writable_networks.update(
+            network.network_id
+            for network in self.networks.values()
+            if network.tags & full_tags
+        )
+        LOGGER.debug(
+            "The API key may change these networks: %s", self._writable_networks
+        )
+
+    def ssid_access_points(self, ssid: MerakiSsid) -> list[MerakiDevice]:
+        """Return the access points that broadcast an SSID, judging by their tags."""
+        # Offline ones are only unplugged for now and pick up their configuration
+        # when they come back; dormant ones have been gone for a long time.
+        return [
+            device
+            for device in self.data.devices.values()
+            if device.product_type == "wireless"
+            and device.network_id == ssid.network_id
+            and device.status != "dormant"
+            and (
+                ssid.available_on_all_aps is not False
+                or set(device.tags) & set(ssid.availability_tags)
+            )
+        ]
+
+    def ssid_tags(self, network_id: str | None) -> dict[str, list[MerakiSsid]]:
+        """Return the tags the network's SSIDs are limited to, with their SSIDs."""
+        tags: dict[str, list[MerakiSsid]] = {}
+        for ssid in self.data.ssids.values():
+            if ssid.network_id == network_id and ssid.available_on_all_aps is False:
+                for tag in ssid.availability_tags:
+                    tags.setdefault(tag, []).append(ssid)
+        return tags
+
+    async def async_set_device_tag(
+        self, serial: str, tag: str, *, present: bool
+    ) -> None:
+        """Add a tag to a device or remove it."""
+        device = self.data.devices[serial]
+        tags = [t for t in device.tags if t != tag] + ([tag] if present else [])
+        try:
+            # The API replaces the device's whole tag list.
+            await self.client.devices.updateDevice(serial, tags=tags)
+        except APIError as err:
+            if is_auth_error(err):
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="write_not_permitted",
+                ) from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="tag_update_failed",
+                translation_placeholders={"device": device.name, "error": str(err)},
+            ) from err
+
+        device.tags = tuple(tags)
+        self.async_update_listeners()
+
+    def can_write(self, network_id: str | None) -> bool:
+        """Return True if the API key may change the network's configuration."""
+        return self._full_write_access or network_id in self._writable_networks
+
+    async def async_set_ssid_enabled(
+        self, network_id: str, number: int, *, enabled: bool
+    ) -> None:
+        """Enable or disable an SSID."""
+        ssid = self.data.ssids[(network_id, number)]
+        try:
+            await self.client.wireless.updateNetworkWirelessSsid(
+                network_id, str(number), enabled=enabled
+            )
+        except APIError as err:
+            if is_auth_error(err):
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="write_not_permitted",
+                ) from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="ssid_update_failed",
+                translation_placeholders={"ssid": ssid.name, "error": str(err)},
+            ) from err
+
+        # The access points apply it on their next config sync.
+        ssid.enabled = enabled
+        self.async_update_listeners()
 
     async def async_set_port_enabled(
         self, serial: str, port_id: str, *, enabled: bool

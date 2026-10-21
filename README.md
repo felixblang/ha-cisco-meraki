@@ -57,7 +57,7 @@ Switches also get two entities per port:
 
 | Entity | Description |
 | -- | -- |
-| **Port _n_** | Switch that enables or disables the port in the Dashboard. Attributes show the port description, type and VLAN. |
+| **Port _n_** | Switch that enables or disables the port in the Dashboard. Attributes show the port description, type and VLAN. Only with an API key that may change the switch's network; see [API key access](#api-key-access). |
 | **Port _n_ link** | Connectivity sensor that is on while something is connected. Attributes show the connector (`RJ45` or `SFP`), speed and duplex. |
 
 Ports that deliver PoE also get **Port _n_ PoE power** (average W over the newest
@@ -101,6 +101,40 @@ intervals or arrive in 20-minute batches.
 When you turn a port on or off in Home Assistant, the switch shows the new setting
 right away. The Meraki switch itself applies the change on its next sync with the
 Dashboard, usually within a minute or two, and the link sensor follows on a later poll.
+
+### Wi-Fi (SSIDs)
+
+Each network with access points gets a **_Network_ Wi-Fi** device with two entities
+per configured SSID:
+
+| Entity | Description |
+| -- | -- |
+| **_SSID_** | Switch that enables or disables the SSID in the Dashboard. Attributes show its slot number, authentication mode, whether it is hidden, the tags it is limited to (`availability_tags`, empty if it is broadcast on all access points) and the access points that broadcast it according to their tags (`access_points`; offline ones stay listed, as they get the SSID once they are back, dormant ones are left out). Only with an API key that may change the network; see [API key access](#api-key-access). |
+| **_SSID_ clients** | Number of clients currently online on the SSID in that network. |
+
+SSIDs that are configured but disabled show up as switched off, so you can turn them
+on from Home Assistant, for example a guest network. Every network has 15 SSID slots;
+unused ones (still named "Unconfigured SSID _n_" in the Dashboard) are left out, and
+appear once you configure them. Renaming an SSID in the Dashboard keeps its entities.
+
+An SSID that is limited to tags is only broadcast by access points with one of those
+tags, so an enabled SSID can still be broadcast nowhere; its `access_points` attribute
+is then empty. To fix that from Home Assistant, each access point gets:
+
+| Entity | Description |
+| -- | -- |
+| **Tags** | All of the access point's tags (diagnostic). |
+| **Tag _tag_** | Switch that adds the tag to the access point or removes it, for every tag that one of the network's SSIDs is limited to. Its `ssids` attribute shows which SSIDs use the tag. Only with an API key that may change the network. |
+
+The tag switches also work while an access point is offline; it picks up the change
+when it comes back. Other tags can't be changed from Home Assistant, as Meraki also
+uses tags for group policies, alerts and more. A tag switch becomes unavailable once
+no SSID uses its tag.
+
+After you switch an SSID, the Dashboard takes the change at once, but the access
+points only apply it on their next configuration sync, usually within a minute or two.
+Turning off the SSID that the device you are using is connected to cuts its
+connection.
 
 ### Client presence
 
@@ -218,7 +252,7 @@ Home Assistant configuration and restart Home Assistant.
 
 1. In the Meraki Dashboard, enable API access and create an API key under
    **Organization > API & Webhooks**. A read-only administrator's key is enough for
-   monitoring; turning switch ports on and off needs a key with full access.
+   monitoring; turning switch ports and SSIDs on and off needs a key with full access.
 2. In Home Assistant, go to **Settings > Devices & services > Add integration** and
    search for **Cisco Meraki**.
 3. Enter the API key. If it has access to several organizations, pick one. Repeat the
@@ -227,6 +261,18 @@ Home Assistant configuration and restart Home Assistant.
    network, including ones added later.
 
 To change the networks later, open the integration's **Configure** dialog.
+
+### API key access
+
+Meraki API keys act with the rights of the administrator who created them. At every
+start, the integration reads the organization's administrators to find out which
+networks the key may change: all of them for an administrator with full organization
+access, or the networks (or network tags) the administrator has full access to.
+
+Switches for switch ports, SSIDs and access point tags are only added for those
+networks; a read-only key gets all sensors but no switches. If the administrator later
+loses write access, the switches are removed at the next start or reload, and they
+come back when write access is restored.
 
 If the API key is revoked, or its administrator loses access to the organization,
 Home Assistant asks you to reauthenticate. Enter a key of an administrator who has
@@ -246,6 +292,10 @@ Every 5 minutes, it also requests PoE energy (one request per 50 switches) and, 
 organization has MT sensors, their readings history; fast metrics such as PM2.5 report
 every second, so this is usually a few pages. Each switch's port connectors are looked
 up once, the first time the switch is seen.
+
+If there are access points, it adds one SSID request per network that has some.
+The network list is looked up once at the start and again when a device shows up in a
+new network, and the administrator list once at every start.
 
 For a small organization that is around 10 requests a minute. The Meraki API allows
 10 requests per second per organization; the integration retries automatically when it

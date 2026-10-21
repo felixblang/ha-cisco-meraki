@@ -199,11 +199,24 @@
       },
       "audio_level": {
         "name": "Audio level"
+      },
+      "ssid_clients": {
+        "name": "{ssid} clients",
+        "unit_of_measurement": "clients"
+      },
+      "tags": {
+        "name": "Tags"
       }
     },
     "switch": {
       "port": {
         "name": "Port {port}"
+      },
+      "ssid": {
+        "name": "{ssid}"
+      },
+      "tag": {
+        "name": "Tag {tag}"
       }
     }
   },
@@ -215,10 +228,16 @@
       "message": "Error communicating with the Meraki Dashboard API: {error}"
     },
     "write_not_permitted": {
-      "message": "The Meraki API key is read-only. Use a key with full access to change switch ports."
+      "message": "The Meraki API key is read-only. Use a key with full access to change switch ports, SSIDs and tags."
     },
     "port_update_failed": {
       "message": "Could not change port {port}: {error}"
+    },
+    "ssid_update_failed": {
+      "message": "Could not change SSID {ssid}: {error}"
+    },
+    "tag_update_failed": {
+      "message": "Could not change the tags of {device}: {error}"
     }
   }
 }

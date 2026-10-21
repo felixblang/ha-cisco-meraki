@@ -15,6 +15,7 @@ from homeassistant.components.sensor import (
 from homeassistant.const import (
     LIGHT_LUX,
     PERCENTAGE,
+    EntityCategory,
     UnitOfEnergy,
     UnitOfPower,
     UnitOfTime,
@@ -25,7 +26,13 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .camera_sense import LIGHT, MerakiCameraSense, SenseValue
 from .const import CLIENT_PRODUCT_TYPES, DEVICE_STATUSES, DOMAIN, UPLINK_STATUSES
-from .entity import MerakiEntity, MerakiPortEntity, async_setup_port_entities
+from .entity import (
+    MerakiEntity,
+    MerakiPortEntity,
+    MerakiSsidEntity,
+    async_setup_port_entities,
+    async_setup_ssid_entities,
+)
 from .readings import ENERGY_SOURCE_METRIC, METRICS
 from .sensor_coordinator import (
     ENERGY_KEY,
@@ -70,6 +77,13 @@ SENSORS: tuple[MerakiSensorEntityDescription, ...] = (
         value_fn=lambda device: (
             device.status if device.status in DEVICE_STATUSES else None
         ),
+    ),
+    MerakiSensorEntityDescription(
+        key="tags",
+        translation_key="tags",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda device: ", ".join(sorted(device.tags)) or None,
+        supported_fn=lambda device: device.product_type == "wireless",
     ),
     MerakiSensorEntityDescription(
         key="clients",
@@ -121,6 +135,8 @@ async def async_setup_entry(
 
     for factory in (MerakiPortPoePowerSensor, MerakiPortPoeEnergySensor):
         async_setup_port_entities(entry, async_add_entities, factory, _has_poe)
+
+    async_setup_ssid_entities(entry, async_add_entities, MerakiSsidClientsSensor)
 
     if sense := coordinator.camera_sense:
 
@@ -593,3 +609,21 @@ class MerakiCameraSenseSensor(MerakiEntity, SensorEntity):
         """Return the latest value."""
         value = self._sense.values.get((self._serial, self._key))
         return value.value if value else None
+
+
+class MerakiSsidClientsSensor(MerakiSsidEntity, SensorEntity):
+    """The number of clients online on an SSID."""
+
+    _attr_translation_key = "ssid_clients"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: MerakiDataUpdateCoordinator, network_id: str, number: int
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, network_id, number, "clients")
+
+    @property
+    def native_value(self) -> int:
+        """Return the number of online clients."""
+        return self.ssid.client_count
