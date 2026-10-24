@@ -2,7 +2,7 @@
 
 # Cisco Meraki for Home Assistant
 
-[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories)
+[![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://hacs.xyz/)
 
 A Home Assistant custom integration for [Cisco Meraki](https://meraki.cisco.com/)
 organizations: device status, clients and their presence, switch ports you can turn
@@ -261,11 +261,22 @@ the one Home Assistant uses for its built-in Meraki integration.
 
 ## Installation
 
+### HACS
+
+Cisco Meraki is part of the default HACS catalog.
+
+[![Open the Cisco Meraki repository in HACS on your Home Assistant.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=felixblang&repository=ha-cisco-meraki&category=integration)
+
+1. In Home Assistant, open **HACS** and search for **Cisco Meraki**.
+2. Open it, select **Download**, and restart Home Assistant.
+
 ### HACS (custom repository)
+
+If Cisco Meraki does not show up in the HACS search, add it as a custom repository:
 
 1. In HACS, open the menu in the top right and choose **Custom repositories**.
 2. Add `https://github.com/felixblang/ha-cisco-meraki` with the type **Integration**.
-3. Install **Cisco Meraki** and restart Home Assistant.
+3. Download **Cisco Meraki** and restart Home Assistant.
 
 ### Manual
 
