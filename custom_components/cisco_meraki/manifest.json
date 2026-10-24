@@ -9,7 +9,9 @@
   ],
   "config_flow": true,
   "dependencies": [
-    "recorder"
+    "ffmpeg",
+    "recorder",
+    "stream"
   ],
   "documentation": "https://github.com/felixblang/ha-cisco-meraki",
   "integration_type": "hub",

@@ -217,6 +217,9 @@
       },
       "tag": {
         "name": "Tag {tag}"
+      },
+      "rtsp": {
+        "name": "RTSP stream"
       }
     }
   },
@@ -228,7 +231,7 @@
       "message": "Error communicating with the Meraki Dashboard API: {error}"
     },
     "write_not_permitted": {
-      "message": "The Meraki API key is read-only. Use a key with full access to change switch ports, SSIDs and tags."
+      "message": "The Meraki API key is read-only. Use a key with full access to change switch ports, SSIDs, tags and cameras."
     },
     "port_update_failed": {
       "message": "Could not change port {port}: {error}"
@@ -238,6 +241,9 @@
     },
     "tag_update_failed": {
       "message": "Could not change the tags of {device}: {error}"
+    },
+    "camera_update_failed": {
+      "message": "Could not change the RTSP stream of {device}: {error}"
     }
   }
 }

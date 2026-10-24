@@ -15,6 +15,7 @@ from meraki import APIError
 
 from .api import is_auth_error
 from .const import (
+    CAMERA_VIDEO_INTERVAL,
     CLIENT_PRODUCT_TYPES,
     CLIENT_TIMESPAN_SECONDS,
     CONF_NETWORKS,
@@ -116,6 +117,14 @@ class MerakiSsid:
 
 
 @dataclass(slots=True)
+class MerakiCameraVideo:
+    """A camera's external RTSP stream settings."""
+
+    rtsp_enabled: bool
+    rtsp_url: str | None
+
+
+@dataclass(slots=True)
 class MerakiSwitchPort:
     """A switch port's configuration and link state."""
 
@@ -175,6 +184,8 @@ class MerakiData:
     clients: dict[str, MerakiClient] = field(default_factory=dict)
     # (Network ID, SSID number) -> configured SSID.
     ssids: dict[tuple[str, int], MerakiSsid] = field(default_factory=dict)
+    # Camera serial -> video settings.
+    camera_video: dict[str, MerakiCameraVideo] = field(default_factory=dict)
     # Switch serial -> port ID -> port.
     ports: dict[str, dict[str, MerakiSwitchPort]] = field(default_factory=dict)
     # Appliance serial -> interface (e.g. "wan1") -> uplink.
@@ -231,6 +242,9 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
         self.sensors: MerakiSensorCoordinator | None = None
         # MV Sense data of the organization's cameras, received over MQTT.
         self.camera_sense: MerakiCameraSense | None = None
+        # Camera serial -> video settings, and when they were last fetched.
+        self._camera_video: dict[str, MerakiCameraVideo] = {}
+        self._camera_video_fetched_at: datetime | None = None
         # Network ID -> network; looked up again when a device is in a new network.
         self.networks: dict[str, MerakiNetwork] = {}
         # Whether the API key may change everything, or else the networks it may.
@@ -337,10 +351,38 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
             await self._async_fetch_uplinks(data)
             await self._async_fetch_uplink_quality(data)
 
+        if cameras := [
+            serial for serial, d in data.devices.items() if d.product_type == "camera"
+        ]:
+            await self._async_fetch_camera_video(data, cameras)
+
         if self.camera_sense:
             await self.camera_sense.async_poll(self.client)
 
         return data
+
+    async def _async_fetch_camera_video(
+        self, data: MerakiData, cameras: list[str]
+    ) -> None:
+        """Add the cameras' RTSP settings, fetched every few minutes."""
+        now = dt_util.utcnow()
+        fetched_at = self._camera_video_fetched_at
+        if fetched_at is None or now - fetched_at >= CAMERA_VIDEO_INTERVAL:
+            to_fetch = cameras
+            self._camera_video_fetched_at = now
+        else:
+            # New cameras need not wait for the next round.
+            to_fetch = [s for s in cameras if s not in self._camera_video]
+        settings = await _gather(
+            *(self.client.camera.getDeviceCameraVideoSettings(s) for s in to_fetch)
+        )
+        for serial, video in zip(to_fetch, settings, strict=True):
+            self._camera_video[serial] = _parse_camera_video(video)
+        data.camera_video = {
+            serial: self._camera_video[serial]
+            for serial in cameras
+            if serial in self._camera_video
+        }
 
     async def _async_fetch_uplink_quality(self, data: MerakiData) -> None:
         """Add uplink loss and latency, and write their statistics."""
@@ -901,6 +943,32 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
         """Return True if the API key may change the network's configuration."""
         return self._full_write_access or network_id in self._writable_networks
 
+    async def async_set_camera_rtsp(self, serial: str, *, enabled: bool) -> None:
+        """Expose a camera's RTSP stream on the LAN, or stop exposing it."""
+        try:
+            video = await self.client.camera.updateDeviceCameraVideoSettings(
+                serial, externalRtspEnabled=enabled
+            )
+        except APIError as err:
+            if is_auth_error(err):
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="write_not_permitted",
+                ) from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="camera_update_failed",
+                translation_placeholders={
+                    "device": self.data.devices[serial].name,
+                    "error": str(err),
+                },
+            ) from err
+
+        self._camera_video[serial] = self.data.camera_video[serial] = (
+            _parse_camera_video(video)
+        )
+        self.async_update_listeners()
+
     async def async_set_ssid_enabled(
         self, network_id: str, number: int, *, enabled: bool
     ) -> None:
@@ -973,6 +1041,14 @@ async def _gather[T](*requests: Awaitable[T]) -> list[T]:
             raise result
         values.append(result)
     return values
+
+
+def _parse_camera_video(video: dict[str, Any]) -> MerakiCameraVideo:
+    enabled = bool(video.get("externalRtspEnabled"))
+    return MerakiCameraVideo(
+        rtsp_enabled=enabled,
+        rtsp_url=video.get("rtspUrl") if enabled else None,
+    )
 
 
 def _unwrap_items(response: Any) -> list[dict[str, Any]]:

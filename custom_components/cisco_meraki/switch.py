@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.const import Platform
+from homeassistant.const import EntityCategory, Platform
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 
@@ -86,6 +86,24 @@ async def async_setup_entry(
 
     _async_add_new_tags()
     entry.async_on_unload(coordinator.async_add_listener(_async_add_new_tags))
+
+    known_cameras: set[str] = set()
+
+    @callback
+    def _async_add_new_cameras() -> None:
+        current = {
+            serial
+            for serial in coordinator.data.camera_video
+            if coordinator.can_write(coordinator.data.devices[serial].network_id)
+        }
+        if new := current - known_cameras:
+            known_cameras.update(new)
+            async_add_entities(
+                MerakiRtspSwitch(coordinator, serial) for serial in sorted(new)
+            )
+
+    _async_add_new_cameras()
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_new_cameras))
 
 
 def _network_of(coordinator: MerakiDataUpdateCoordinator, unique_id: str) -> str | None:
@@ -225,3 +243,27 @@ class MerakiTagSwitch(MerakiEntity, SwitchEntity):
         await self.coordinator.async_set_device_tag(
             self._serial, self._tag, present=False
         )
+
+
+class MerakiRtspSwitch(MerakiEntity, SwitchEntity):
+    """Exposes a camera's RTSP stream on the LAN, which needs no credentials."""
+
+    _attr_translation_key = "rtsp"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: MerakiDataUpdateCoordinator, serial: str) -> None:
+        """Initialize the switch."""
+        super().__init__(coordinator, serial, "rtsp")
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if the RTSP stream is exposed."""
+        return self.coordinator.data.camera_video[self._serial].rtsp_enabled
+
+    async def async_turn_on(self, **kwargs: Any) -> None:  # noqa: ARG002
+        """Expose the RTSP stream."""
+        await self.coordinator.async_set_camera_rtsp(self._serial, enabled=True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:  # noqa: ARG002
+        """Stop exposing the RTSP stream."""
+        await self.coordinator.async_set_camera_rtsp(self._serial, enabled=False)

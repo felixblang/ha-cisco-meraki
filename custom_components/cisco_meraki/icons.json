@@ -112,6 +112,12 @@
         "state": {
           "off": "mdi:tag-off"
         }
+      },
+      "rtsp": {
+        "default": "mdi:cctv",
+        "state": {
+          "off": "mdi:cctv-off"
+        }
       }
     }
   }

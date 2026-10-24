@@ -207,6 +207,30 @@ complete hour, up to 24 hours back.
 > Assistant release may change; the integration then falls back to hourly statistics
 > and logs a warning.
 
+### MV cameras (live video)
+
+Each MV camera gets a **camera** entity that shows its live video in Home Assistant,
+like the Generic Camera integration, as long as the camera exposes its RTSP stream.
+Home Assistant streams the video directly from the camera on your network and takes
+still images from it; nothing goes through the Meraki cloud. While the stream is not
+exposed, the camera entity is unavailable.
+
+Each camera also gets an **RTSP stream** switch (a configuration entity) that turns the
+camera's external RTSP stream on or off in the Dashboard, with an API key that may
+change the camera's network; see [API key access](#api-key-access). The integration
+never turns the stream on by itself: the switch shows what is set in the Dashboard.
+
+> [!WARNING]
+> Meraki's RTSP stream has no password or other protection. Once it is on, anyone who
+> can reach the camera on your network can watch it, not only Home Assistant. Only
+> turn it on in networks where that is acceptable, for example by keeping cameras in
+> a separate VLAN that only Home Assistant can reach.
+
+Home Assistant needs to reach the camera's LAN IP address on port 9000; the stream is
+not available through the cloud. The video settings are read every 5 minutes, so a
+change in the Dashboard shows up within 5 minutes; a change through the switch shows
+up at once.
+
 ### MV cameras (MV Sense)
 
 If your MV cameras publish MV Sense data to an MQTT broker (set up in the camera's
@@ -294,6 +318,7 @@ every second, so this is usually a few pages. Each switch's port connectors are 
 up once, the first time the switch is seen.
 
 If there are access points, it adds one SSID request per network that has some.
+If there are cameras, it requests each camera's video settings every 5 minutes.
 The network list is looked up once at the start and again when a device shows up in a
 new network, and the administrator list once at every start.
 

@@ -17,6 +17,8 @@ DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
 # 5-minute intervals, so polling them more often only fetches the same data again.
 SENSOR_SCAN_INTERVAL = timedelta(minutes=5)
 PORT_ENERGY_INTERVAL = timedelta(minutes=5)
+# Camera video settings rarely change; changes from Home Assistant apply at once.
+CAMERA_VIDEO_INTERVAL = timedelta(minutes=5)
 
 # Port energy usage is fetched for at least this span (shorter ones return nothing)
 # and at most this far back after a restart.

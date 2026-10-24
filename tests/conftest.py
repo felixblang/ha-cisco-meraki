@@ -414,6 +414,10 @@ def mock_client() -> Generator[MagicMock]:
     )
     client.wireless.updateNetworkWirelessSsid = AsyncMock(return_value={})
     client.devices.updateDevice = AsyncMock(return_value={})
+    client.camera.getDeviceCameraVideoSettings = AsyncMock(
+        return_value={"externalRtspEnabled": False}
+    )
+    client.camera.updateDeviceCameraVideoSettings = AsyncMock(return_value={})
     client.organizations.getOrganizationUplinksStatuses = AsyncMock(
         return_value=deepcopy(UPLINK_STATUSES)
     )
