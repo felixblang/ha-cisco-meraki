@@ -70,6 +70,9 @@
     "binary_sensor": {
       "port_link": {
         "name": "Port {port} link"
+      },
+      "remote_lockout": {
+        "name": "Remote lockout"
       }
     },
     "sensor": {
@@ -220,6 +223,28 @@
       },
       "rtsp": {
         "name": "RTSP stream"
+      },
+      "power": {
+        "name": "Power"
+      }
+    },
+    "button": {
+      "power_cycle": {
+        "name": "Power cycle"
+      }
+    },
+    "event": {
+      "button": {
+        "name": "Button",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "press": "Pressed",
+              "short_press": "Short press",
+              "long_press": "Long press"
+            }
+          }
+        }
       }
     }
   },
@@ -231,7 +256,7 @@
       "message": "Error communicating with the Meraki Dashboard API: {error}"
     },
     "write_not_permitted": {
-      "message": "The Meraki API key is read-only. Use a key with full access to change switch ports, SSIDs, tags and cameras."
+      "message": "The Meraki API key is read-only. Use a key with full access to change switch ports, SSIDs, tags, cameras and MT40 power."
     },
     "port_update_failed": {
       "message": "Could not change port {port}: {error}"
@@ -244,6 +269,15 @@
     },
     "camera_update_failed": {
       "message": "Could not change the RTSP stream of {device}: {error}"
+    },
+    "power_locked": {
+      "message": "The lockout switch on {device} is locked, so it ignores power commands. Unlock it on the device first."
+    },
+    "power_command_failed": {
+      "message": "Could not change the power of {device}: {error}"
+    },
+    "power_command_timeout": {
+      "message": "{device} did not confirm the power command in time. Check its state in the Meraki Dashboard."
     }
   }
 }

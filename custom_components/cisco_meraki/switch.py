@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.const import EntityCategory, Platform
 from homeassistant.core import callback
-from homeassistant.helpers import entity_registry as er
 
 from .entity import (
     MerakiEntity,
     MerakiPortEntity,
     MerakiSsidEntity,
+    async_remove_unwritable,
     async_setup_port_entities,
     async_setup_ssid_entities,
 )
@@ -39,14 +39,7 @@ async def async_setup_entry(
     """Set up a switch per switch port and SSID the API key may change."""
     coordinator = entry.runtime_data
 
-    # Switches that a read-only key could not use are left out, and removed if the
-    # key lost its write access since they were added.
-    registry = er.async_get(hass)
-    for registry_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if registry_entry.domain == Platform.SWITCH and not coordinator.can_write(
-            _network_of(coordinator, registry_entry.unique_id)
-        ):
-            registry.async_remove(registry_entry.entity_id)
+    async_remove_unwritable(hass, entry, Platform.SWITCH)
 
     def _port_writable(
         coordinator: MerakiDataUpdateCoordinator,
@@ -105,14 +98,23 @@ async def async_setup_entry(
     _async_add_new_cameras()
     entry.async_on_unload(coordinator.async_add_listener(_async_add_new_cameras))
 
+    known_mt40s: set[str] = set()
 
-def _network_of(coordinator: MerakiDataUpdateCoordinator, unique_id: str) -> str | None:
-    """Return the network of a switch entity by its unique ID."""
-    if "_ssid_" in unique_id:
-        return unique_id.split("_ssid_", maxsplit=1)[0]
-    # Device entities start with the serial, which has no underscores.
-    device = coordinator.data.devices.get(unique_id.split("_", maxsplit=1)[0])
-    return device.network_id if device else None
+    @callback
+    def _async_add_new_mt40s() -> None:
+        current = {
+            serial
+            for serial in coordinator.data.power_controls
+            if coordinator.can_write(coordinator.data.devices[serial].network_id)
+        }
+        if new := current - known_mt40s:
+            known_mt40s.update(new)
+            async_add_entities(
+                MerakiPowerSwitch(coordinator, serial) for serial in sorted(new)
+            )
+
+    _async_add_new_mt40s()
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_new_mt40s))
 
 
 class MerakiPortSwitch(MerakiPortEntity, SwitchEntity):
@@ -267,3 +269,38 @@ class MerakiRtspSwitch(MerakiEntity, SwitchEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:  # noqa: ARG002
         """Stop exposing the RTSP stream."""
         await self.coordinator.async_set_camera_rtsp(self._serial, enabled=False)
+
+
+class MerakiPowerSwitch(MerakiEntity, SwitchEntity):
+    """Turns the power of the device plugged into an MT40 on or off."""
+
+    _attr_translation_key = "power"
+    _attr_device_class = SwitchDeviceClass.OUTLET
+
+    def __init__(self, coordinator: MerakiDataUpdateCoordinator, serial: str) -> None:
+        """Initialize the switch."""
+        super().__init__(coordinator, serial, "power")
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if the MT40 powers the device plugged into it."""
+        return self.coordinator.data.power_controls[self._serial].enabled
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return whether the MT40's lockout switch blocks remote commands."""
+        return {
+            "remote_lockout": self.coordinator.data.power_controls[self._serial].locked
+        }
+
+    async def async_turn_on(self, **kwargs: Any) -> None:  # noqa: ARG002
+        """Turn the power on."""
+        await self.coordinator.async_power_command(
+            self._serial, "enableDownstreamPower"
+        )
+
+    async def async_turn_off(self, **kwargs: Any) -> None:  # noqa: ARG002
+        """Turn the power off."""
+        await self.coordinator.async_power_command(
+            self._serial, "disableDownstreamPower"
+        )

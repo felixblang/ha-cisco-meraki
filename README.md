@@ -207,6 +207,42 @@ complete hour, up to 24 hours back.
 > Assistant release may change; the integration then falls back to hourly statistics
 > and logs a warning.
 
+#### Buttons
+
+Sensors with a button (MT14, MT15 and the MT30 smart automation button) get a
+**Button** event entity that fires when the button is pressed, to trigger automations.
+The MT30 reports **Short press** and **Long press** separately, if its MQTT messages say
+which; MT14 and MT15 only report **Pressed**. The event's `pressed_at` attribute is the
+time the sensor reports for the press.
+
+Button presses only reach Home Assistant in time over MQTT, so the Button entities are
+only added when Home Assistant's MQTT integration is set up and connected to the broker
+your Meraki network publishes to. Through the API, a press would only show up minutes
+later. Presses from before Home Assistant started, which the broker keeps as retained
+messages, are ignored.
+
+### MT40 power control
+
+Each MT40 smart power controller gets:
+
+| Entity | Description |
+| -- | -- |
+| **Power** | Switch that turns the power of the device plugged into the MT40 on or off. |
+| **Power cycle** | Button that turns the power off and on again, for example to restart a modem. |
+| **Remote lockout** | The position of the lockout switch on the side of the MT40 (diagnostic): on while it is unlocked and remote commands work. |
+
+Power and Power cycle are only added with an API key that may change the MT40's
+network; see [API key access](#api-key-access). Meraki carries out the commands with a
+short delay; the switch only changes once the MT40 has confirmed them, and an error
+is shown if it does not within 30 seconds. Power that is switched in the Dashboard or
+on the device shows up within 5 minutes.
+
+> [!WARNING]
+> Turning off an MT40 turns off whatever is plugged into it, including Home Assistant
+> itself or the network it needs to turn the power back on. Lock the lockout switch on
+> MT40s that power such devices: a locked MT40 ignores all remote power commands, and
+> Home Assistant then refuses them with an error.
+
 ### MV cameras (live video)
 
 Each MV camera gets a **camera** entity that shows its live video in Home Assistant,
@@ -304,10 +340,11 @@ start, the integration reads the organization's administrators to find out which
 networks the key may change: all of them for an administrator with full organization
 access, or the networks (or network tags) the administrator has full access to.
 
-Switches for switch ports, SSIDs and access point tags are only added for those
-networks; a read-only key gets all sensors but no switches. If the administrator later
-loses write access, the switches are removed at the next start or reload, and they
-come back when write access is restored.
+Switches for switch ports, SSIDs, access point tags, camera streams and MT40 power,
+and the MT40 power cycle button, are only added for those networks; a read-only key
+gets all sensors and cameras but none of these. If the administrator later loses write
+access, they are removed at the next start or reload, and they come back when write
+access is restored.
 
 If the API key is revoked, or its administrator loses access to the organization,
 Home Assistant asks you to reauthenticate. Enter a key of an administrator who has
@@ -330,6 +367,8 @@ up once, the first time the switch is seen.
 
 If there are access points, it adds one SSID request per network that has some.
 If there are cameras, it requests each camera's video settings every 5 minutes.
+If there are MT40s, it requests their power and lockout state every 5 minutes (one
+request for all of them).
 The network list is looked up once at the start and again when a device shows up in a
 new network, and the administrator list once at every start.
 

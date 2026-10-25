@@ -26,6 +26,9 @@ from .const import (
     PORT_ENERGY_INTERVAL,
     PORT_USAGE_MAX_BACKFILL,
     PORT_USAGE_MIN_SPAN,
+    POWER_COMMAND_POLL_INTERVAL,
+    POWER_COMMAND_TIMEOUT,
+    POWER_CONTROL_INTERVAL,
     UPLINK_PRODUCT_TYPES,
     UPLINK_QUALITY_DELAY,
     UPLINK_QUALITY_MAX_BACKFILL,
@@ -125,6 +128,15 @@ class MerakiCameraVideo:
 
 
 @dataclass(slots=True)
+class MerakiPowerControl:
+    """The downstream power of an MT40 and its remote lockout switch."""
+
+    enabled: bool | None = None
+    # While locked, the MT40 ignores remote power commands.
+    locked: bool | None = None
+
+
+@dataclass(slots=True)
 class MerakiSwitchPort:
     """A switch port's configuration and link state."""
 
@@ -186,6 +198,8 @@ class MerakiData:
     ssids: dict[tuple[str, int], MerakiSsid] = field(default_factory=dict)
     # Camera serial -> video settings.
     camera_video: dict[str, MerakiCameraVideo] = field(default_factory=dict)
+    # MT40 serial -> downstream power and remote lockout.
+    power_controls: dict[str, MerakiPowerControl] = field(default_factory=dict)
     # Switch serial -> port ID -> port.
     ports: dict[str, dict[str, MerakiSwitchPort]] = field(default_factory=dict)
     # Appliance serial -> interface (e.g. "wan1") -> uplink.
@@ -245,6 +259,9 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
         # Camera serial -> video settings, and when they were last fetched.
         self._camera_video: dict[str, MerakiCameraVideo] = {}
         self._camera_video_fetched_at: datetime | None = None
+        # MT40 serial -> power state, and when it was last fetched.
+        self._power_controls: dict[str, MerakiPowerControl] = {}
+        self._power_controls_fetched_at: datetime | None = None
         # Network ID -> network; looked up again when a device is in a new network.
         self.networks: dict[str, MerakiNetwork] = {}
         # Whether the API key may change everything, or else the networks it may.
@@ -356,10 +373,48 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
         ]:
             await self._async_fetch_camera_video(data, cameras)
 
+        if mt40s := [
+            serial
+            for serial, d in data.devices.items()
+            if d.product_type == "sensor" and (d.model or "").startswith("MT40")
+        ]:
+            await self._async_fetch_power_controls(data, mt40s)
+
         if self.camera_sense:
             await self.camera_sense.async_poll(self.client)
 
         return data
+
+    async def _async_fetch_power_controls(
+        self, data: MerakiData, mt40s: list[str]
+    ) -> None:
+        """Add the MT40s' power state, fetched every few minutes."""
+        now = dt_util.utcnow()
+        fetched_at = self._power_controls_fetched_at
+        if (
+            fetched_at is None
+            or now - fetched_at >= POWER_CONTROL_INTERVAL
+            or not set(mt40s) <= self._power_controls.keys()
+        ):
+            self._power_controls_fetched_at = now
+            sensors = await self.client.sensor.getOrganizationSensorReadingsLatest(
+                self.organization_id,
+                total_pages="all",
+                serials=mt40s,
+                metrics=["downstreamPower", "remoteLockoutSwitch"],
+            )
+            for sensor in sensors:
+                control = self._power_controls.setdefault(
+                    sensor["serial"], MerakiPowerControl()
+                )
+                for reading in sensor.get("readings", []):
+                    if reading.get("metric") == "downstreamPower":
+                        control.enabled = reading["downstreamPower"].get("enabled")
+                    elif reading.get("metric") == "remoteLockoutSwitch":
+                        control.locked = reading["remoteLockoutSwitch"].get("locked")
+            for serial in mt40s:
+                self._power_controls.setdefault(serial, MerakiPowerControl())
+        data.power_controls = {serial: self._power_controls[serial] for serial in mt40s}
 
     async def _async_fetch_camera_video(
         self, data: MerakiData, cameras: list[str]
@@ -942,6 +997,61 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
     def can_write(self, network_id: str | None) -> bool:
         """Return True if the API key may change the network's configuration."""
         return self._full_write_access or network_id in self._writable_networks
+
+    async def async_power_command(self, serial: str, operation: str) -> None:
+        """
+        Turn an MT40's downstream power on, off or off and on again.
+
+        Meraki runs the command asynchronously, so its result is waited for before
+        the state changes.
+        """
+        device = self.data.devices[serial]
+        if self.data.power_controls[serial].locked:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="power_locked",
+                translation_placeholders={"device": device.name},
+            )
+        try:
+            command = await self.client.sensor.createDeviceSensorCommand(
+                serial, operation
+            )
+            async with asyncio.timeout(POWER_COMMAND_TIMEOUT):
+                while command.get("status") not in ("completed", "failed"):
+                    await asyncio.sleep(POWER_COMMAND_POLL_INTERVAL)
+                    command = await self.client.sensor.getDeviceSensorCommand(
+                        serial, command["commandId"]
+                    )
+        except APIError as err:
+            if is_auth_error(err):
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="write_not_permitted",
+                ) from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="power_command_failed",
+                translation_placeholders={"device": device.name, "error": str(err)},
+            ) from err
+        except TimeoutError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="power_command_timeout",
+                translation_placeholders={"device": device.name},
+            ) from err
+        if command["status"] == "failed":
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="power_command_failed",
+                translation_placeholders={
+                    "device": device.name,
+                    "error": "; ".join(command.get("errors") or []) or "failed",
+                },
+            )
+
+        # A power cycle ends with the power on.
+        self._power_controls[serial].enabled = operation != "disableDownstreamPower"
+        self.async_update_listeners()
 
     async def async_set_camera_rtsp(self, serial: str, *, enabled: bool) -> None:
         """Expose a camera's RTSP stream on the LAN, or stop exposing it."""

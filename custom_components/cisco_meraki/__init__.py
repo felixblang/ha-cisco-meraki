@@ -17,8 +17,10 @@ if TYPE_CHECKING:
 
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
+    Platform.BUTTON,
     Platform.CAMERA,
     Platform.DEVICE_TRACKER,
+    Platform.EVENT,
     Platform.SENSOR,
     Platform.SWITCH,
 ]

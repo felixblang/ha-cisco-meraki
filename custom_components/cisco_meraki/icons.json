@@ -118,6 +118,22 @@
         "state": {
           "off": "mdi:cctv-off"
         }
+      },
+      "power": {
+        "default": "mdi:power-socket-eu",
+        "state": {
+          "off": "mdi:power-socket-eu"
+        }
+      }
+    },
+    "button": {
+      "power_cycle": {
+        "default": "mdi:power-cycle"
+      }
+    },
+    "event": {
+      "button": {
+        "default": "mdi:gesture-tap-button"
       }
     }
   }

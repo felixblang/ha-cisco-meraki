@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import (
     CONNECTION_NETWORK_MAC,
     DeviceEntryType,
@@ -18,6 +19,8 @@ from .coordinator import MerakiDataUpdateCoordinator
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from homeassistant.const import Platform
+    from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity import Entity
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -200,3 +203,31 @@ def async_setup_ssid_entities(
 
     _async_add_new_ssids()
     entry.async_on_unload(coordinator.async_add_listener(_async_add_new_ssids))
+
+
+@callback
+def async_remove_unwritable(
+    hass: HomeAssistant, entry: MerakiConfigEntry, domain: Platform
+) -> None:
+    """
+    Remove the domain's entities in networks the API key can no longer change.
+
+    Entities that change the configuration are only added with write access; this
+    removes those added while the key still had it.
+    """
+    coordinator = entry.runtime_data
+    registry = er.async_get(hass)
+    for registry_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if registry_entry.domain == domain and not coordinator.can_write(
+            _network_of(coordinator, registry_entry.unique_id)
+        ):
+            registry.async_remove(registry_entry.entity_id)
+
+
+def _network_of(coordinator: MerakiDataUpdateCoordinator, unique_id: str) -> str | None:
+    """Return the network of an entity by its unique ID."""
+    if "_ssid_" in unique_id:
+        return unique_id.split("_ssid_", maxsplit=1)[0]
+    # Device entities start with the serial, which has no underscores.
+    device = coordinator.data.devices.get(unique_id.split("_", maxsplit=1)[0])
+    return device.network_id if device else None

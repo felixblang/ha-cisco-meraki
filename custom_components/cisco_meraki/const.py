@@ -19,6 +19,12 @@ SENSOR_SCAN_INTERVAL = timedelta(minutes=5)
 PORT_ENERGY_INTERVAL = timedelta(minutes=5)
 # Camera video settings rarely change; changes from Home Assistant apply at once.
 CAMERA_VIDEO_INTERVAL = timedelta(minutes=5)
+# MT40 power state changed outside Home Assistant shows up this often.
+POWER_CONTROL_INTERVAL = timedelta(minutes=5)
+# Meraki runs MT40 power commands asynchronously; their result is polled this often,
+# for at most this long.
+POWER_COMMAND_POLL_INTERVAL = 1
+POWER_COMMAND_TIMEOUT = 30
 
 # Port energy usage is fetched for at least this span (shorter ones return nothing)
 # and at most this far back after a restart.
