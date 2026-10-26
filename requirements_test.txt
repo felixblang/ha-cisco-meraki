@@ -1,5 +1,5 @@
 -r requirements.txt
-pytest-homeassistant-custom-component==0.13.373
+pytest-homeassistant-custom-component==0.13.375
 # Requirements of the camera, stream and ffmpeg integrations the cameras depend on;
 # Home Assistant installs them at runtime, but the tests import them directly.
 PyTurboJPEG==1.8.3

@@ -13,3 +13,10 @@ updates:
     ignore:
       # Dependabot should not update Home Assistant as that should match the homeassistant key in hacs.json
       - dependency-name: "homeassistant"
+      # The test plugin pins one Home Assistant version; it is updated together with it.
+      - dependency-name: "pytest-homeassistant-custom-component"
+      # Pinned by Home Assistant's camera and stream integrations; updated together
+      # with Home Assistant.
+      - dependency-name: "av"
+      - dependency-name: "numpy"
+      - dependency-name: "pyturbojpeg"
