@@ -8,11 +8,13 @@ from homeassistant.const import CONF_API_KEY, EVENT_HOMEASSISTANT_STOP, Platform
 
 from . import camera_sense, mqtt_source
 from .api import async_close_client, async_create_client
+from .const import DOMAIN
 from .coordinator import MerakiConfigEntry, MerakiDataUpdateCoordinator
 from .sensor_coordinator import MerakiSensorCoordinator
 
 if TYPE_CHECKING:
     from homeassistant.core import Event, HomeAssistant
+    from homeassistant.helpers import device_registry as dr
     from meraki.aio import AsyncDashboardAPI
 
 PLATFORMS: list[Platform] = [
@@ -95,6 +97,17 @@ async def _async_start_sensors(
     # Subscribing only now keeps MQTT readings from getting ahead of the backfill.
     if unsubscribe := await mqtt_source.async_subscribe(hass, sensors):
         entry.async_on_unload(unsubscribe)
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant,  # noqa: ARG001
+    entry: MerakiConfigEntry,  # noqa: ARG001
+    device_entry: dr.DeviceEntry,
+) -> bool:
+    """Allow removing the device of a client tracker, but not a Meraki device."""
+    # Meraki devices and Wi-Fi networks have identifiers; a client's device has only
+    # its MAC address.
+    return not any(domain == DOMAIN for domain, _ in device_entry.identifiers)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: MerakiConfigEntry) -> bool:

@@ -54,16 +54,23 @@
       "init": {
         "title": "Cisco Meraki options",
         "data": {
-          "networks": "Networks"
+          "networks": "Networks",
+          "client_networks": "Tracked client networks",
+          "client_vlans": "Tracked client VLANs"
         },
         "data_description": {
-          "networks": "Only include devices from these networks. Leave empty to include all networks."
+          "networks": "Only include devices from these networks. Leave empty to include all networks.",
+          "client_networks": "Only clients in these networks get a device tracker. Leave empty to track clients in all networks.",
+          "client_vlans": "Only clients in these VLANs get a device tracker, for example 1 and 11. Leave empty to track clients in all VLANs. Trackers of clients outside the selection are removed, together with the devices created for them."
         }
       }
     },
     "abort": {
       "cannot_connect": "Failed to connect to the Meraki Dashboard API.",
       "not_loaded": "The integration must be loaded to change its options."
+    },
+    "error": {
+      "invalid_vlan": "Enter VLAN IDs from 1 to 4094."
     }
   },
   "entity": {

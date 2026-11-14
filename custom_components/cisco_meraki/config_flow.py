@@ -25,7 +25,14 @@ from homeassistant.helpers.selector import (
 from meraki import APIError
 
 from .api import async_close_client, async_create_client, is_auth_error
-from .const import CONF_NETWORKS, CONF_ORGANIZATION_ID, DOMAIN, LOGGER
+from .const import (
+    CONF_CLIENT_NETWORKS,
+    CONF_CLIENT_VLANS,
+    CONF_NETWORKS,
+    CONF_ORGANIZATION_ID,
+    DOMAIN,
+    LOGGER,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -41,23 +48,53 @@ API_KEY_SCHEMA = vol.Schema(
 )
 
 
-def networks_schema(networks: list[dict[str, Any]]) -> vol.Schema:
-    """Return a schema to pick networks; an empty selection means all of them."""
+def _networks_selector(networks: list[dict[str, Any]]) -> SelectSelector:
     options = [
         SelectOptionDict(
             value=network["id"], label=network.get("name") or network["id"]
         )
         for network in sorted(networks, key=lambda n: (n.get("name") or "").lower())
     ]
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=options, multiple=True, mode=SelectSelectorMode.DROPDOWN
+        )
+    )
+
+
+def networks_schema(networks: list[dict[str, Any]]) -> vol.Schema:
+    """Return a schema to pick networks; an empty selection means all of them."""
+    return vol.Schema({vol.Optional(CONF_NETWORKS): _networks_selector(networks)})
+
+
+def options_schema(networks: list[dict[str, Any]]) -> vol.Schema:
+    """Return the options: networks, and the networks and VLANs of tracked clients."""
     return vol.Schema(
         {
-            vol.Optional(CONF_NETWORKS): SelectSelector(
+            vol.Optional(CONF_NETWORKS): _networks_selector(networks),
+            vol.Optional(CONF_CLIENT_NETWORKS): _networks_selector(networks),
+            # VLAN IDs are typed in; the API has no list of a network's VLANs that
+            # works for every network type.
+            vol.Optional(CONF_CLIENT_VLANS): SelectSelector(
                 SelectSelectorConfig(
-                    options=options, multiple=True, mode=SelectSelectorMode.DROPDOWN
+                    options=[],
+                    multiple=True,
+                    custom_value=True,
+                    mode=SelectSelectorMode.DROPDOWN,
                 )
-            )
+            ),
         }
     )
+
+
+MAX_VLAN_ID = 4094
+
+
+def _is_vlan_id(value: Any) -> bool:
+    try:
+        return 1 <= int(str(value).strip()) <= MAX_VLAN_ID
+    except ValueError:
+        return False
 
 
 class MerakiConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -242,9 +279,20 @@ class MerakiOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Choose which networks to include."""
+        """Choose which networks to include and which clients to track."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
+            vlans = user_input.get(CONF_CLIENT_VLANS) or []
+            if all(_is_vlan_id(vlan) for vlan in vlans):
+                return self.async_create_entry(
+                    data={
+                        **user_input,
+                        CONF_CLIENT_VLANS: sorted(
+                            {str(int(str(vlan).strip())) for vlan in vlans}, key=int
+                        ),
+                    }
+                )
+            errors[CONF_CLIENT_VLANS] = "invalid_vlan"
 
         entry: MerakiConfigEntry = self.config_entry
         if entry.state is not ConfigEntryState.LOADED:
@@ -262,7 +310,8 @@ class MerakiOptionsFlow(OptionsFlow):
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                networks_schema(networks),
-                entry.options,
+                options_schema(networks),
+                user_input or entry.options,
             ),
+            errors=errors,
         )

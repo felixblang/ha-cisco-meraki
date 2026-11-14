@@ -151,6 +151,18 @@ about five to six minutes later. The trackers use the client data that is fetche
 the client counts anyway, so they need no extra requests. Bluetooth devices are not
 tracked.
 
+In organizations with many networks and VLANs, most clients are not worth a tracker.
+In the integration's **Configure** dialog, **Tracked client networks** and **Tracked
+client VLANs** limit the trackers to clients in those networks and VLANs, for example
+only the home VLAN 1 and the IoT VLAN 11; leave them empty to track every client. The
+client counts still include all clients. When you narrow the selection, the trackers
+of clients outside it are removed, together with the devices Home Assistant created
+for them; a tracker that was added to another integration's device leaves that device
+alone. For clients that are not among the clients of the last hour, the integration
+looks up the clients of the last month once at every start, one request per network
+with clients; a tracker whose client was not seen in that month stays, as its VLAN
+is unknown. You can delete such a client device yourself from its device page.
+
 ### MT sensors
 
 MT sensors get a sensor per metric they report: temperature, humidity, CO2, PM2.5,

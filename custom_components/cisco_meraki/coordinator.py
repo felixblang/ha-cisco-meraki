@@ -16,6 +16,7 @@ from meraki import APIError
 from .api import is_auth_error
 from .const import (
     CAMERA_VIDEO_INTERVAL,
+    CLIENT_HISTORY_TIMESPAN_SECONDS,
     CLIENT_PRODUCT_TYPES,
     CLIENT_TIMESPAN_SECONDS,
     CONF_NETWORKS,
@@ -91,6 +92,8 @@ class MerakiClient:
     ip: str | None
     online: bool
     last_seen: datetime | None
+    # The VLAN ID as the API reports it, as a string; None if it reports none.
+    vlan: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,14 +327,7 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
                 tags=tuple(device.get("tags") or ()),
             )
 
-        # Only networks that contain a client-serving device need a client query.
-        network_ids = sorted(
-            {
-                d.network_id
-                for d in data.devices.values()
-                if d.network_id and d.product_type in CLIENT_PRODUCT_TYPES
-            }
-        )
+        network_ids = _client_network_ids(data)
         client_lists = await _gather(
             *(self._async_fetch_network_clients(nid) for nid in network_ids)
         )
@@ -1130,15 +1126,40 @@ class MerakiDataUpdateCoordinator(DataUpdateCoordinator[MerakiData]):
         self.data.ports[serial][port_id].enabled = enabled
         self.async_update_listeners()
 
+    async def async_fetch_client_history(self) -> dict[str, MerakiClient]:
+        """Return the clients of the last month, by MAC address."""
+        network_ids = _client_network_ids(self.data)
+        client_lists = await _gather(
+            *(
+                self._async_fetch_network_clients(
+                    nid, timespan=CLIENT_HISTORY_TIMESPAN_SECONDS
+                )
+                for nid in network_ids
+            )
+        )
+        return _merge_clients(network_ids, client_lists)
+
     async def _async_fetch_network_clients(
-        self, network_id: str
+        self, network_id: str, timespan: int = CLIENT_TIMESPAN_SECONDS
     ) -> list[dict[str, Any]]:
         return await self.client.networks.getNetworkClients(
             network_id,
             total_pages="all",
             perPage=5000,
-            timespan=CLIENT_TIMESPAN_SECONDS,
+            timespan=timespan,
         )
+
+
+def _client_network_ids(data: MerakiData) -> list[str]:
+    """Return the networks that need a client query."""
+    # Only networks that contain a client-serving device have clients.
+    return sorted(
+        {
+            d.network_id
+            for d in data.devices.values()
+            if d.network_id and d.product_type in CLIENT_PRODUCT_TYPES
+        }
+    )
 
 
 async def _gather[T](*requests: Awaitable[T]) -> list[T]:
@@ -1199,6 +1220,7 @@ def _merge_clients(
                 ip=item.get("ip"),
                 online=item.get("status") == "Online",
                 last_seen=_parse_last_seen(item.get("lastSeen")),
+                vlan=None if (vlan := item.get("vlan")) in (None, "") else str(vlan),
             )
             # A client that moved between networks is listed in both.
             if (known := clients.get(mac)) is None or _is_more_recent(client, known):

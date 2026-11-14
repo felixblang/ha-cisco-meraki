@@ -10,6 +10,9 @@ MANUFACTURER = "Cisco Meraki"
 
 CONF_ORGANIZATION_ID = "organization_id"
 CONF_NETWORKS = "networks"
+# Only clients in these networks and VLANs get a tracker; empty means all of them.
+CONF_CLIENT_NETWORKS = "client_networks"
+CONF_CLIENT_VLANS = "client_vlans"
 
 # Device, port and uplink status.
 DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
@@ -39,6 +42,9 @@ UPLINK_QUALITY_MAX_BACKFILL = timedelta(hours=1)
 
 # Look-back window used when counting online clients per device.
 CLIENT_TIMESPAN_SECONDS = 3600
+# Look-back window for finding the network and VLAN of tracked clients that are not
+# among the current clients; the longest the API allows.
+CLIENT_HISTORY_TIMESPAN_SECONDS = 31 * 24 * 3600
 
 # Product types that serve clients and therefore get a client count sensor.
 CLIENT_PRODUCT_TYPES = frozenset({"appliance", "switch", "wireless"})

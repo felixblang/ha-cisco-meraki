@@ -15,6 +15,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.cisco_meraki.api import CALLER
 from custom_components.cisco_meraki.const import (
+    CONF_CLIENT_NETWORKS,
+    CONF_CLIENT_VLANS,
     CONF_NETWORKS,
     CONF_ORGANIZATION_ID,
     DOMAIN,
@@ -198,11 +200,38 @@ async def test_options_flow(
     )
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert mock_config_entry.options == {CONF_NETWORKS: ["N_2"]}
+    assert mock_config_entry.options == {CONF_NETWORKS: ["N_2"], CONF_CLIENT_VLANS: []}
 
     # Both test devices are in NETWORK_ID, so the filter leaves nothing.
     assert NETWORK_ID not in mock_config_entry.options[CONF_NETWORKS]
     assert hass.states.get("sensor.office_ap_status").state == "unavailable"
+
+
+async def test_options_flow_client_filter(
+    hass: HomeAssistant, mock_client: MagicMock, mock_config_entry: MockConfigEntry
+) -> None:
+    """Client networks and VLANs are stored; VLAN IDs are checked."""
+    mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_CLIENT_VLANS: ["1", "vlan 11"]}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_CLIENT_VLANS: "invalid_vlan"}
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_CLIENT_NETWORKS: [NETWORK_ID], CONF_CLIENT_VLANS: ["11", " 1", "01"]},
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert mock_config_entry.options == {
+        CONF_CLIENT_NETWORKS: [NETWORK_ID],
+        CONF_CLIENT_VLANS: ["1", "11"],
+    }
 
 
 def test_caller_version_matches_manifest() -> None:
