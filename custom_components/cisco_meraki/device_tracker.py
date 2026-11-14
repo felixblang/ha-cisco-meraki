@@ -202,6 +202,11 @@ class MerakiClientTracker(
         self.mac = mac
         self._attr_mac_address = mac
         self._attr_name = name or mac
+        # Each client gets a device of its own. Home Assistant 2026.10 ignores this
+        # and handles the device itself; from 2026.11 on, trackers must provide it.
+        self._attr_device_info = dr.DeviceInfo(
+            connections={(dr.CONNECTION_NETWORK_MAC, mac)}, name=name or mac
+        )
         self._async_update_attrs()
 
     @property

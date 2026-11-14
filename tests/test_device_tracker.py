@@ -24,6 +24,7 @@ from custom_components.cisco_meraki.const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
+from custom_components.cisco_meraki.device_tracker import MerakiClientTracker
 
 from .conftest import DEVICES, ORG_ID, make_api_error
 
@@ -120,6 +121,24 @@ async def test_trackers_disabled_by_default(
     assert hass.states.get(PHONE).state == STATE_HOME
     nas = entity_registry.async_get("device_tracker.nas")
     assert nas.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+
+
+@pytest.mark.parametrize(
+    ("name", "device_name"),
+    [
+        pytest.param("Pixel 9", "Pixel 9", id="named"),
+        pytest.param(None, PHONE_MAC, id="unnamed"),
+    ],
+)
+def test_device_info(name: str | None, device_name: str) -> None:
+    """Each tracker describes a device of its own, named after the client."""
+    # Home Assistant 2026.10, which the tests run on, does not register it yet.
+    coordinator = MagicMock()
+    coordinator.data.clients = {}
+    tracker = MerakiClientTracker(coordinator, PHONE_MAC, name)
+    assert tracker._attr_device_info == dr.DeviceInfo(  # noqa: SLF001
+        connections={(dr.CONNECTION_NETWORK_MAC, PHONE_MAC)}, name=device_name
+    )
 
 
 @pytest.mark.usefixtures("entity_registry_enabled_by_default")
