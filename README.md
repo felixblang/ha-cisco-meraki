@@ -307,6 +307,11 @@ The sensors appear as soon as a camera publishes the value. Cameras publish with
 few seconds and repeat their counts several times a second; only changes are written,
 and Home Assistant compiles the statistics as for any other sensor.
 
+Detections flicker: a parked car is lost for a frame and found again. So that a count
+does not drop and come back several times a second, a count that rises is written at
+once, and one that drops only after the camera has reported the lower count for 3
+seconds. Illuminance is written in whole lux.
+
 Cameras that have not published over MQTT for 2 minutes, or whose broker Home
 Assistant cannot reach, are polled through the Dashboard API every minute instead.
 The API only provides people counts: each zone's average over the last minute, rounded
