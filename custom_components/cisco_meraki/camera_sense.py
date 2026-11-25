@@ -37,6 +37,11 @@ OBJECT_TYPES = ("person", "vehicle")
 # this long is polled through the API.
 MQTT_FRESH = timedelta(minutes=2)
 
+# Detections flicker: a parked car is lost for a frame and found again, so a count
+# drops and comes back several times a second. A count that rises is taken at once;
+# one that drops only once the cameras have reported the lower count for this long.
+COUNT_DROP_HOLD = timedelta(seconds=3)
+
 LIGHT = "light"
 AUDIO_LEVEL = "audio_level"
 
@@ -47,7 +52,7 @@ class SenseValue:
 
     serial: str
     key: str
-    # Counts are whole numbers, light and audio level are not.
+    # Counts and light are whole numbers, the audio level is not.
     value: int | float
     # Zone ID and object type, for zone counts.
     zone_id: str | None = None
@@ -78,7 +83,12 @@ def parse_message(topic: str, payload: Any) -> list[SenseValue]:
     if subtopic in SCALAR_SUBTOPICS:
         key, field = SCALAR_SUBTOPICS[subtopic]
         value = data.get(field)
-        return [SenseValue(serial, key, float(value))] if _is_number(value) else []
+        if not _is_number(value):
+            return []
+        # Cameras report light to a tenth of a lux, which changes with nearly every
+        # message; whole lux are as precise as the light sensor is useful.
+        rounded = math.floor(value + 0.5) if key == LIGHT else float(value)
+        return [SenseValue(serial, key, rounded)]
 
     # Zone topics carry counts; raw_detections, audio_detections and the like do not.
     counts = data.get("counts")
@@ -139,6 +149,9 @@ class MerakiCameraSense:
         self._update_listeners: dict[tuple[str, str], list[Callable[[], None]]] = {}
         # Camera serial -> when it last published over MQTT.
         self._mqtt_seen: dict[str, datetime] = {}
+        # (Camera serial, key) -> since when a count lower than the current one is
+        # reported over MQTT.
+        self._drops_since: dict[tuple[str, str], datetime] = {}
 
     async def async_poll(self, client: AsyncDashboardAPI) -> None:
         """Poll the cameras that are not publishing over MQTT."""
@@ -158,9 +171,30 @@ class MerakiCameraSense:
     @callback
     def async_mqtt_received(self, value: SenseValue) -> None:
         """Store a value received over MQTT."""
-        if value.serial in self.serials:
-            self._mqtt_seen[value.serial] = dt_util.utcnow()
+        if value.serial not in self.serials:
+            return
+        now = dt_util.utcnow()
+        self._mqtt_seen[value.serial] = now
+        if self._drop_is_held(value, now):
+            return
         self.async_set(value)
+
+    def _drop_is_held(self, value: SenseValue, now: datetime) -> bool:
+        """Return whether a dropped count has not been reported for long enough."""
+        key = (value.serial, value.key)
+        previous = self.values.get(key)
+        if (
+            value.object_type is None
+            or previous is None
+            or value.value >= previous.value
+        ):
+            self._drops_since.pop(key, None)
+            return False
+        since = self._drops_since.setdefault(key, now)
+        if now - since < COUNT_DROP_HOLD:
+            return True
+        del self._drops_since[key]
+        return False
 
     async def async_load_zone_names(self, client: AsyncDashboardAPI) -> None:
         """Look up the names of the cameras' analytics zones."""

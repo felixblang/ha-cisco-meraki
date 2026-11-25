@@ -18,6 +18,7 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.cisco_meraki.camera_sense import (
     AUDIO_LEVEL,
+    COUNT_DROP_HOLD,
     LIGHT,
     SenseValue,
     parse_message,
@@ -59,8 +60,8 @@ FULL_FRAME_PEOPLE = "sensor.mv12_full_frame_people"
         ),
         pytest.param(
             "light",
-            '{"lux": 136.2, "ts": 1792523620311}',
-            [SenseValue(CAMERA, LIGHT, 136.2)],
+            '{"lux": 136.5, "ts": 1792523620311}',
+            [SenseValue(CAMERA, LIGHT, 137)],
             id="light",
         ),
         pytest.param(
@@ -122,7 +123,8 @@ async def test_camera_sense_sensors(
     await hass.async_block_till_done()
     assert hass.states.get("sensor.mv12_entrance_people").state == "1"
     assert hass.states.get("sensor.mv12_entrance_vehicles").state == "1"
-    assert hass.states.get("sensor.mv12_illuminance").state == "120.5"
+    # Light in whole lux.
+    assert hass.states.get("sensor.mv12_illuminance").state == "121"
     # The audio level is relative to the microphone, so it starts disabled.
     audio = entity_registry.async_get("sensor.mv12_audio_level")
     assert audio.disabled_by is er.RegistryEntryDisabler.INTEGRATION
@@ -147,6 +149,61 @@ async def test_repeated_values_are_not_written(
         )
         await hass.async_block_till_done()
     assert hass.states.get(FULL_FRAME_PEOPLE).last_reported == first
+
+
+def _fire_people(hass: HomeAssistant, count: int) -> None:
+    async_fire_mqtt_message(
+        hass, f"{PREFIX}/0", f'{{"ts":1, "counts":{{"person":{count}}}}}'
+    )
+
+
+@pytest.mark.usefixtures("mqtt_mock", "mock_client")
+async def test_flickering_counts_are_not_written(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A count that drops for a moment and comes back is not written."""
+    await _setup(hass, mock_config_entry)
+    _fire_people(hass, 1)
+    await hass.async_block_till_done()
+    first = hass.states.get(FULL_FRAME_PEOPLE).last_reported
+
+    # Lost and found again several times a second, as a parked car is.
+    for count in (0, 1, 0, 0, 1) * 4:
+        freezer.tick(0.3)
+        _fire_people(hass, count)
+        await hass.async_block_till_done()
+    people = hass.states.get(FULL_FRAME_PEOPLE)
+    assert people.state == "1"
+    assert people.last_reported == first
+
+
+@pytest.mark.usefixtures("mqtt_mock", "mock_client")
+async def test_counts_drop_once_held(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A count rises at once and drops once the lower count has been held."""
+    await _setup(hass, mock_config_entry)
+    _fire_people(hass, 0)
+    await hass.async_block_till_done()
+    _fire_people(hass, 2)
+    await hass.async_block_till_done()
+    assert hass.states.get(FULL_FRAME_PEOPLE).state == "2"
+
+    _fire_people(hass, 1)
+    await hass.async_block_till_done()
+    freezer.tick(COUNT_DROP_HOLD - timedelta(seconds=1))
+    _fire_people(hass, 1)
+    await hass.async_block_till_done()
+    assert hass.states.get(FULL_FRAME_PEOPLE).state == "2"
+
+    freezer.tick(timedelta(seconds=1))
+    _fire_people(hass, 0)
+    await hass.async_block_till_done()
+    assert hass.states.get(FULL_FRAME_PEOPLE).state == "0"
 
 
 @pytest.mark.usefixtures("mqtt_mock", "mock_client", "freezer")
